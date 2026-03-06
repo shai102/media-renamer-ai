@@ -15,4 +15,6 @@
 3. 在“设置”中配置你的 TMDb 或 BGM API Key。
 ### 打包命令
 pyinstaller --noconfirm --onefile --windowed --name "媒体终极归档刮削助手" --collect-all guessit --collect-all babelfish --clean "media_renamer_gui.py"
+
+
 基于CHAGPT 5.3CODEX编写
