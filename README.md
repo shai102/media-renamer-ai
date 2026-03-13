@@ -58,8 +58,14 @@ python main.py
 - `api_cache.json` 与日志文件默认本地缓存，不会提交到仓库。
 - 首次使用建议先做 `高速识别预览`，确认标题与集数后再执行重命名或归档。
 - 打包为EXE的流程
-- 如果你还没装 PyInstaller，先执行：
+- 如果你还没装 PyInstaller，
+- 先执行：
+
 pip install pyinstaller
-然后执行：pyinstaller --noconfirm --onefile --windowed --name "媒体归档刮削助手" --collect-all guessit --collect-all babelfish --clean main.py
+
+然后执行：
+
+pyinstaller --noconfirm --onefile --windowed --name "媒体归档刮削助手" --collect-all guessit --collect-all babelfish --clean main.py
+
 打包后的文件在：dist/媒体归档刮削助手.exe
 
