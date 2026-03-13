@@ -32,7 +32,7 @@ utils/helpers.py        # 通用工具、缓存、NFO 与图片写入
 安装示例：
 
 ```bash
-pip install requests guessit urllib3
+pip install -r requirements.txt
 ```
 
 ## Run
