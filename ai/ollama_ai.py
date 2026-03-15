@@ -55,7 +55,7 @@ def fetch_siliconflow_info(filename, api_key, model_name="deepseek-ai/DeepSeek-V
 	}
 
 	try:
-		response = session.post(url, json=payload, headers=headers, timeout=30)
+		response = session.post(url, json=payload, headers=headers, timeout=15)
 		response.raise_for_status()
 
 		result_text = response.json()['choices'][0]['message']['content'].strip()
