@@ -1,0 +1,1 @@
+pyinstaller --noconfirm --onefile --windowed --name "媒体归档刮削助手" --collect-all guessit --collect-all babelfish --clean main.py

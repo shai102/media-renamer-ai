@@ -239,6 +239,39 @@ class MediaRenamerGUI:
         else:
             return os.path.splitext(filename)
 
+    def _extract_explicit_season(self, pure_name):
+        """仅从明确季标记中提取季号，避免把年份误判为季号。"""
+        text = str(pure_name or '')
+        patterns = [
+            r'(?i)\bS\s*0*(\d{1,2})\b',
+            r'(?i)\bSeason\s*0*(\d{1,2})\b',
+            r'(?i)\b(\d{1,2})(?:st|nd|rd|th)\s*Season\b',
+            r'第\s*0*(\d{1,2})\s*季',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if not match:
+                continue
+            season_num = safe_int(match.group(1), 0)
+            if 0 <= season_num <= 99:
+                return season_num
+        return None
+
+    def _pick_season(self, pure_name, guess_data=None, fallback=1):
+        """优先使用显式季标记；否则只接受合理范围内的猜测季号。"""
+        explicit = self._extract_explicit_season(pure_name)
+        if explicit is not None:
+            return explicit
+
+        guessed = safe_int((guess_data or {}).get('season'), 0)
+        if 0 < guessed <= 99:
+            return guessed
+
+        fallback_num = safe_int(fallback, 1)
+        if 0 <= fallback_num <= 99:
+            return fallback_num
+        return 1
+
     def create_widgets(self):
         """创建UI组件"""
         # 根目录选择
@@ -373,7 +406,30 @@ class MediaRenamerGUI:
         if not url or not model:
             return None, "Ollama URL 或模型未配置"
         
-        prompt = """分析文件名提取标准元数据。要求纯JSON。规则：1. title: 标准剧名 2. year: 年份 3. season: 季数 4. episode: 集数"""
+        prompt = r"""
+    你是动漫/影视文件名解析助手。
+
+    任务：
+    从文件名中提取作品标题、年份、季数、集数。
+
+    硬性规则：
+    1. 只输出 JSON，不要解释，不要 markdown。
+    2. title 必须是文件名里真实存在的作品名，不允许联想、不允许猜测其他作品。
+    3. 遇到番组文件名时，优先保留原标题，如 Violet_Evergarden -> Violet Evergarden。
+    4. 删除字幕组、分辨率、编码、语言标签、发布信息，如 KTXP、1080p、BDrip、GB、x264。
+    5. season 默认 1。
+    6. episode 必须是数字；像 [01] 这种优先识别为 episode。
+    7. 如果无法确定 year，填 null。
+    8. 如果文件名里没有明确作品名，title 设为空字符串，不要猜。
+
+    返回格式：
+    {
+      "title": "",
+      "year": null,
+      "season": 1,
+      "episode": 1
+    }
+    """
         
         payload = {
             "model": model,
@@ -989,7 +1045,7 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
             
             # 获取强制设置
             forced_s = self.forced_seasons.get(path_key)
-            s = forced_s if forced_s is not None else (g.get('season') or m.get('s', 1))
+            s = forced_s if forced_s is not None else self._pick_season(pure, g, m.get('s', 1))
             
             raw_e = g.get('episode') or m.get('e', 1)
             if isinstance(raw_e, list):
@@ -1159,7 +1215,7 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
             if cached_ai:
                 t = cached_ai['title']
                 y = cached_ai.get('year')
-                s = g.get('season') or cached_ai.get('season') or 1
+                s = self._pick_season(pure, g, cached_ai.get('season') or 1)
                 e = extracted_ep or 1
                 ai_msg = "复用"
                 ai_data = cached_ai
@@ -1183,7 +1239,7 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
                 if ai_data:
                     t = ai_data.get('title', '未知')
                     y = ai_data.get('year')
-                    s = g.get('season') or ai_data.get('season', 1)
+                    s = self._pick_season(pure, g, ai_data.get('season', 1))
                     e = extracted_ep or safe_int(ai_data.get('episode'), 1)
                     
                     with self.cache_lock:
@@ -1191,7 +1247,7 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
                 else:
                     t = g.get('title') or derive_title_from_filename(pure) or '未知'
                     y = g.get('year')
-                    s = g.get('season', 1)
+                    s = self._pick_season(pure, g, 1)
                     e = extracted_ep or 1
                     ai_msg = "猜测"
             
