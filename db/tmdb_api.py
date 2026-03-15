@@ -1,5 +1,6 @@
 import logging
 import re
+import difflib
 
 import requests
 
@@ -176,6 +177,7 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
 
 	q = clean_search_title(title)
 	stype = "tv" if is_tv else "movie"
+	q_norm = re.sub(r'[\W_]+', '', str(q).lower())
 
 	def _items_to_candidates(items):
 		candidates = []
@@ -217,6 +219,18 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
 		response.raise_for_status()
 		return response.json().get('results', [])
 
+	def _similarity_score(item):
+		name = item.get('name') or item.get('title') or ''
+		orig = item.get('original_name') or item.get('original_title') or ''
+		name_norm = re.sub(r'[\W_]+', '', str(name).lower())
+		orig_norm = re.sub(r'[\W_]+', '', str(orig).lower())
+		scores = []
+		if name_norm:
+			scores.append(difflib.SequenceMatcher(None, q_norm, name_norm).ratio())
+		if orig_norm:
+			scores.append(difflib.SequenceMatcher(None, q_norm, orig_norm).ratio())
+		return max(scores) if scores else 0.0
+
 	try:
 		if is_tv:
 			search_plan = ["year", "first_air_date_year", None] if year else [None]
@@ -233,6 +247,30 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
 				results = _request_once(query, year_mode)
 				if results:
 					return _items_to_candidates(results)
+
+		# Fuzzy fallback: retry with split tokens and rerank by lexical similarity.
+		token_queries = []
+		for token in re.split(r'\s+', q):
+			t = token.strip()
+			if len(t) >= 4 and t.lower() != q.lower() and t not in token_queries:
+				token_queries.append(t)
+
+		fuzzy_pool = []
+		seen = set()
+		for tq in token_queries:
+			for item in _request_once(tq, None):
+				cid = str(item.get('id') or '')
+				if not cid or cid in seen:
+					continue
+				seen.add(cid)
+				fuzzy_pool.append(item)
+
+		if fuzzy_pool:
+			ranked = sorted(fuzzy_pool, key=_similarity_score, reverse=True)
+			top = [it for it in ranked if _similarity_score(it) >= 0.35]
+			if top:
+				return _items_to_candidates(top)
+			return _items_to_candidates(ranked)
 		return []
 	except requests.exceptions.Timeout:
 		return []
@@ -244,7 +282,7 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
 def fetch_tmdb_candidates(title, year=None, is_tv=True, api_key=""):
 	return cached_request(
 		fetch_tmdb_candidates_raw,
-		get_cache_key('tmdb_candidates_v3', f"{title}_{year}_{is_tv}"),
+		get_cache_key('tmdb_candidates_v4', f"{title}_{year}_{is_tv}"),
 		title,
 		year,
 		is_tv,

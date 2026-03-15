@@ -34,6 +34,7 @@ from utils.helpers import (
     candidate_to_result,
     center_window,
     clean_search_title,
+    clear_api_cache_file,
     derive_title_from_filename,
     extract_episode_number,
     extract_year_from_release,
@@ -1250,6 +1251,16 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
                     s = self._pick_season(pure, g, 1)
                     e = extracted_ep or 1
                     ai_msg = "猜测"
+                    # AI unavailable/failed: still reuse stable per-directory guess to reduce repeated parsing noise.
+                    if t and normalize_compare_text(t) not in ("", "未知"):
+                        with self.cache_lock:
+                            if dir_p not in self.dir_cache:
+                                self.dir_cache[dir_p] = {
+                                    "title": t,
+                                    "year": y,
+                                    "season": s,
+                                    "episode": e,
+                                }
             
             # 拦截特别篇，强制归入第 0 季
             if re.search(r'(?i)(?:PROLOGUE|OVA|OAD|SP)', pure):
@@ -1293,7 +1304,8 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
                     try:
                         db_c = self._resolve_db_match(item, t, y, is_tv, mode, ai_data, g)
                         with self.cache_lock:
-                            self.db_cache[cache_key] = db_c
+                            if db_c and len(db_c) >= 2 and db_c[1] != "None":
+                                self.db_cache[cache_key] = db_c
                     finally:
                         with self.cache_lock:
                             waiter = self.db_resolution_events.pop(cache_key, None)
@@ -1616,14 +1628,25 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
             self.tree.delete(i)
         
         self.file_list.clear()
-        self.dir_cache.clear()
-        self.db_cache.clear()
-        self.manual_locks.clear()
-        self.forced_seasons.clear()
-        self.forced_offsets.clear()
-        self.db_resolution_events.clear()
+        with self.cache_lock:
+            # Release any pending waiters first to avoid deadlocks if clear happens during preview.
+            for evt in self.db_resolution_events.values():
+                try:
+                    evt.set()
+                except Exception:
+                    pass
+
+            self.dir_cache.clear()
+            self.db_cache.clear()
+            self.embedding_cache.clear()
+            self.manual_locks.clear()
+            self.forced_seasons.clear()
+            self.forced_offsets.clear()
+            self.db_resolution_events.clear()
+
+        clear_api_cache_file()
         
-        self.status.config(text="列表已清空")
+        self.status.config(text="列表与缓存已清空")
 
 if __name__ == "__main__":
     root = tk.Tk()

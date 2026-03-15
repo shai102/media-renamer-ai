@@ -22,6 +22,21 @@ DEFAULT_VIDEO_EXTS = ".mp4,.mkv,.avi,.rmvb,.ts,.wmv,.strm"
 DEFAULT_SUB_AUDIO_EXTS = ".srt,.ass,.ssa,.vtt,.sub,.idx,.sup,.mka"
 DEFAULT_LANG_TAGS = "sc|tc|chs|cht|zh|zh-CN|zh-TW|jap|en|big5|gbk|utf8|default|forced|jpsc|jptc"
 
+_LANG_TAG_PART = '|'.join(re.escape(t) for t in DEFAULT_LANG_TAGS.split('|') if t.strip())
+LANG_TAG_TOKEN_RE = re.compile(
+	rf'(?i)(?:(?<=^)|(?<=[\s._\-\[\(]))(?:{_LANG_TAG_PART})(?:(?=$)|(?=[\s._\-\]\)]))'
+)
+INVALID_QUERY_TITLES = {
+	'unknown',
+	'none',
+	'null',
+	'untitled',
+	'na',
+	'nan',
+	'未知',
+}
+INVALID_QUERY_TITLES_NORMALIZED = set(INVALID_QUERY_TITLES)
+
 VERSION_TAG_RE = re.compile(r'\[(NC\.Ver|SP|OVA|Extra|Special|OAD|Creditless)\]', re.I)
 EPISODE_NOISE_NUMBERS = {2160, 1080, 720, 480, 265, 264, 10}
 
@@ -119,15 +134,30 @@ def center_window(window, parent, width, height):
 def clean_search_title(title):
 	if not title:
 		return ""
-	text = re.sub(r'\[.*?\]', '', title)
-	text = re.sub(r'\(.*?\)', '', text)
+	# Keep bracket content (often contains series title), only remove bracket chars.
+	text = re.sub(r'[\[\]\(\)（）]', ' ', title)
+	# Drop common release group tags like UHA-WINGS, KTXP, or VC-BETA.
+	text = re.sub(r'(?<![a-z0-9])[A-Z0-9]{2,}(?:-[A-Z0-9]{2,})+(?![a-z0-9])', ' ', text)
 	text = re.sub(
-		r'(?i)(?:10bit|FLAC|BluRay|1080p|720p|x264|x265|HEVC|Remastered|D3D-Raw|BDRip|Web-DL|NC\.Ver|完结合集|第.*?季|第.*?集)',
+		r'(?i)(?:10bit|FLAC|BluRay|1080p|720p|x264|x265|HEVC|Remastered|D3D-Raw|BDRip|Web-DL|NC\.Ver|完结合集|第.*?季|第.*?集|S\d{1,2}E\d{1,4}|EP?\s*\d{1,4})',
 		'',
 		text,
 	)
+	# Remove common language tags accidentally kept from filenames, like .cht/.chs/zh-CN.
+	text = LANG_TAG_TOKEN_RE.sub(' ', text)
+	text = re.sub(r'^[\W_]+|[\W_]+$', '', text, flags=re.UNICODE)
 	text = re.sub(r'\s+', ' ', text).strip()
 	return text
+
+
+def is_meaningful_query_title(title):
+	text = str(title or '').strip()
+	if not text:
+		return False
+	key = normalize_compare_text(text)
+	if not key:
+		return False
+	return key not in INVALID_QUERY_TITLES_NORMALIZED
 
 
 def unique_keep_order(values):
@@ -201,15 +231,17 @@ def build_query_titles(item, query_title, ai_data, g):
 	raw_name = item.get('old_name', '')
 	pure, _ = os.path.splitext(raw_name)
 	dir_title = os.path.basename(item.get('dir', '') or '')
+	guess_title = clean_search_title((g.get('title') if g else None) or '')
 	candidates = [
 		query_title,
 		(ai_data or {}).get('title') if isinstance(ai_data, dict) else None,
-		g.get('title') if g else None,
+		guess_title,
 		derive_title_from_filename(pure),
 		clean_search_title(pure),
 		clean_search_title(dir_title),
 	]
-	return unique_keep_order(candidates)
+	ordered = unique_keep_order(candidates)
+	return [c for c in ordered if is_meaningful_query_title(c)]
 
 
 def safe_str(val):
@@ -286,6 +318,18 @@ def save_cache(cache):
 			pass
 
 
+def clear_api_cache_file():
+	"""Delete persistent API cache on disk in a thread-safe way."""
+	with _cache_file_lock:
+		try:
+			if os.path.exists(CACHE_FILE):
+				os.remove(CACHE_FILE)
+			return True
+		except Exception as err:
+			logging.error(f"清理API缓存文件失败: {err}")
+			return False
+
+
 def get_cache_key(api_name, query):
 	return f"{api_name}:{str(query)}"
 
@@ -300,6 +344,10 @@ def cached_request(api_func, cache_key, *args, **kwargs):
 
 	is_valid = True
 	if result is None:
+		is_valid = False
+	elif isinstance(result, (list, dict, set)) and len(result) == 0:
+		is_valid = False
+	elif isinstance(result, str) and not result.strip():
 		is_valid = False
 	elif isinstance(result, tuple):
 		if len(result) >= 2 and result[1] == "None":
