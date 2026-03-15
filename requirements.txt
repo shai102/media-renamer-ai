@@ -1,3 +1,5 @@
 requests>=2.31.0
 guessit>=3.8.0
 urllib3>=2.0.0
+pyinstaller>=6.0.0
+babelfish>=0.6.0

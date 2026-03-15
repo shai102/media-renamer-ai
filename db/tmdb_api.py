@@ -5,10 +5,18 @@ import difflib
 import requests
 
 from utils.helpers import (
+    ERROR_CODE_CONFIG,
+    ERROR_CODE_HTTP,
+    ERROR_CODE_INVALID,
+    ERROR_CODE_NO_RESULT,
+    ERROR_CODE_PARSE,
+    ERROR_CODE_TIMEOUT,
+    ERROR_CODE_UNKNOWN,
     USER_AGENT,
     cached_request,
     candidate_to_result,
     clean_search_title,
+    format_error_message,
     get_cache_key,
     session,
 )
@@ -37,9 +45,33 @@ def fetch_bgm_by_id_raw(subject_id, api_key=""):
         title = data.get("name_cn") or data.get("name") or str(subject_id)
         return title, str(data.get("id")), "ID强制锁定", meta
     except requests.exceptions.Timeout:
-        return str(subject_id), "None", "请求超时", {}
-    except Exception:
-        return str(subject_id), "None", "ID无效", {}
+        return (
+            str(subject_id),
+            "None",
+            format_error_message(ERROR_CODE_TIMEOUT, "请求超时"),
+            {},
+        )
+    except requests.exceptions.HTTPError as err:
+        if err.response is not None and err.response.status_code == 404:
+            msg = format_error_message(ERROR_CODE_INVALID, "ID无效")
+        else:
+            msg = format_error_message(ERROR_CODE_HTTP, f"HTTP请求失败: {err}")
+        return str(subject_id), "None", msg, {}
+    except ValueError:
+        return (
+            str(subject_id),
+            "None",
+            format_error_message(ERROR_CODE_PARSE, "响应解析失败"),
+            {},
+        )
+    except Exception as err:
+        logging.warning(f"BGM按ID查询异常: {err}")
+        return (
+            str(subject_id),
+            "None",
+            format_error_message(ERROR_CODE_UNKNOWN, "请求异常"),
+            {},
+        )
 
 
 def fetch_bgm_by_id(subject_id, api_key=""):
@@ -109,7 +141,12 @@ def fetch_bgm_info_raw(title, api_key=""):
     candidates = fetch_bgm_candidates_raw(title, api_key)
     if candidates:
         return candidate_to_result(candidates[0], "BGM命中")
-    return title, "None", "未匹配", {}
+    return (
+        title,
+        "None",
+        format_error_message(ERROR_CODE_NO_RESULT, "BGM无结果"),
+        {},
+    )
 
 
 def fetch_bgm_info(title, api_key=""):
@@ -153,7 +190,12 @@ def fetch_bgm_episode(subject_id, season, episode, api_key_bgm):
 
 def fetch_tmdb_by_id_raw(tmdb_id, is_tv=True, api_key=""):
     if not api_key or not api_key.strip():
-        return str(tmdb_id), "None", "未配置TMDb Key", {}
+        return (
+            str(tmdb_id),
+            "None",
+            format_error_message(ERROR_CODE_CONFIG, "未配置TMDb Key"),
+            {},
+        )
 
     stype = "tv" if is_tv else "movie"
 
@@ -177,9 +219,33 @@ def fetch_tmdb_by_id_raw(tmdb_id, is_tv=True, api_key=""):
         title = data.get("name") or data.get("title") or str(tmdb_id)
         return title, str(data.get("id")), "ID锁定成功", meta
     except requests.exceptions.Timeout:
-        return str(tmdb_id), "None", "请求超时", {}
-    except Exception:
-        return str(tmdb_id), "None", "ID无效", {}
+        return (
+            str(tmdb_id),
+            "None",
+            format_error_message(ERROR_CODE_TIMEOUT, "请求超时"),
+            {},
+        )
+    except requests.exceptions.HTTPError as err:
+        if err.response is not None and err.response.status_code == 404:
+            msg = format_error_message(ERROR_CODE_INVALID, "ID无效")
+        else:
+            msg = format_error_message(ERROR_CODE_HTTP, f"HTTP请求失败: {err}")
+        return str(tmdb_id), "None", msg, {}
+    except ValueError:
+        return (
+            str(tmdb_id),
+            "None",
+            format_error_message(ERROR_CODE_PARSE, "响应解析失败"),
+            {},
+        )
+    except Exception as err:
+        logging.warning(f"TMDb按ID查询异常: {err}")
+        return (
+            str(tmdb_id),
+            "None",
+            format_error_message(ERROR_CODE_UNKNOWN, "请求异常"),
+            {},
+        )
 
 
 def fetch_tmdb_by_id(tmdb_id, is_tv=True, api_key=""):
@@ -319,12 +385,22 @@ def fetch_tmdb_candidates(title, year=None, is_tv=True, api_key=""):
 
 def fetch_tmdb_info_raw(title, year=None, is_tv=True, api_key=""):
     if not api_key or not api_key.strip():
-        return title, "None", "未配置TMDb Key", {}
+        return (
+            title,
+            "None",
+            format_error_message(ERROR_CODE_CONFIG, "未配置TMDb Key"),
+            {},
+        )
 
     candidates = fetch_tmdb_candidates_raw(title, year, is_tv, api_key)
     if candidates:
         return candidate_to_result(candidates[0], "TMDb命中")
-    return title, "None", "TMDb无结果", {}
+    return (
+        title,
+        "None",
+        format_error_message(ERROR_CODE_NO_RESULT, "TMDb无结果"),
+        {},
+    )
 
 
 def fetch_tmdb_info(title, year=None, is_tv=True, api_key=""):
@@ -388,11 +464,12 @@ def fetch_tmdb_episode_meta_raw(
                             name = bgm_ep_name
                         if (not plot or not str(plot).strip()) and bgm_ep_plot:
                             plot = bgm_ep_plot
-            except Exception:
-                pass
+            except Exception as err:
+                logging.warning(f"BGM补全剧集信息失败: {err}")
 
         return name or "", plot or "", still or ""
-    except Exception:
+    except Exception as err:
+        logging.warning(f"TMDb剧集详情获取失败: {err}")
         return "", "", ""
 
 
@@ -495,7 +572,7 @@ def fetch_hybrid_episode_meta(
                 )
                 if s_p_res.status_code == 200:
                     s_p = s_p_res.json().get("poster_path", "")
-        except Exception:
-            pass
+        except Exception as err:
+            logging.warning(f"混合来源补全剧集图片失败: {err}")
 
     return ep_n, ep_p, ep_s, s_p

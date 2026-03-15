@@ -36,6 +36,13 @@ from utils.helpers import (
     DEFAULT_SUB_AUDIO_EXTS,
     DEFAULT_TV_FORMAT,
     DEFAULT_VIDEO_EXTS,
+    ERROR_CODE_CONFIG,
+    ERROR_CODE_HTTP,
+    ERROR_CODE_INVALID,
+    ERROR_CODE_NO_RESULT,
+    ERROR_CODE_PARSE,
+    ERROR_CODE_TIMEOUT,
+    ERROR_CODE_UNKNOWN,
     USER_AGENT,
     VERSION_TAG_RE,
     build_query_titles,
@@ -47,7 +54,9 @@ from utils.helpers import (
     extract_episode_number,
     extract_year_from_release,
     format_candidate_label,
+    format_error_message,
     normalize_compare_text,
+    parse_error_message,
     safe_filename,
     safe_int,
     safe_str,
@@ -107,7 +116,7 @@ class SeasonOffsetDialog(tk.Toplevel):
         try:
             self.result = (safe_int(self.s_var.get(), 1), safe_int(self.o_var.get(), 0))
             self.destroy()
-        except:
+        except ValueError:
             messagebox.showerror("错误", "请输入有效的整数！")
 
 
@@ -700,7 +709,7 @@ class MediaRenamerGUI:
 
             content = resp.get("message", {}).get("content", "").strip()
             if not content:
-                return None, "Ollama 返回空内容"
+                return None, format_error_message(ERROR_CODE_PARSE, "Ollama返回空内容")
 
             # 清理可能的 markdown 代码块
             content = re.sub(
@@ -710,7 +719,9 @@ class MediaRenamerGUI:
             try:
                 data = json.loads(content)
                 if not isinstance(data, dict):
-                    return None, "返回内容不是 JSON 对象"
+                    return None, format_error_message(
+                        ERROR_CODE_PARSE, "返回内容不是 JSON 对象"
+                    )
                 return data, "Ollama解析成功"
             except json.JSONDecodeError:
                 # 尝试从文本中提取 JSON
@@ -718,12 +729,14 @@ class MediaRenamerGUI:
                 if json_match:
                     data = json.loads(json_match.group())
                     return data, "Ollama解析成功"
-                return None, "无法解析返回的JSON"
+                return None, format_error_message(
+                    ERROR_CODE_PARSE, "无法解析返回的JSON"
+                )
 
         except requests.exceptions.Timeout:
-            return None, "Ollama请求超时"
+            return None, format_error_message(ERROR_CODE_TIMEOUT, "Ollama请求超时")
         except Exception as e:
-            return None, f"Ollama失败: {str(e)}"
+            return None, format_error_message(ERROR_CODE_UNKNOWN, f"Ollama失败: {str(e)}")
 
     def _can_use_ollama_for_pick(self):
         """是否可用本地模型做候选判定"""
@@ -1177,6 +1190,21 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
     def _async_manual_match_search(self, selected_ids, user_input, mode):
         """异步搜索手动匹配"""
         results = []
+        search_errors = []
+
+        def append_error(source_name, msg_text):
+            code, detail = parse_error_message(msg_text)
+            if not code or code == ERROR_CODE_NO_RESULT:
+                return
+            prefix = {
+                ERROR_CODE_TIMEOUT: "请求超时",
+                ERROR_CODE_CONFIG: "配置缺失",
+                ERROR_CODE_HTTP: "HTTP失败",
+                ERROR_CODE_PARSE: "响应解析失败",
+                ERROR_CODE_UNKNOWN: "请求异常",
+            }.get(code, "请求异常")
+            final_text = detail or str(msg_text)
+            search_errors.append(f"{source_name}{prefix}: {final_text}")
 
         try:
             if user_input.isdigit():
@@ -1187,16 +1215,21 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
                     )
                     if tid != "None":
                         results = [(t, tid, msg, meta)]
+                    else:
+                        append_error("BGM", msg)
                 else:
                     # 先尝试剧集
                     t, tid, msg, meta = fetch_tmdb_by_id(
                         user_input, True, self.tmdb_api_key.get()
                     )
                     if tid == "None":
+                        append_error("TMDb剧集", msg)
                         # 再尝试电影
                         t, tid, msg, meta = fetch_tmdb_by_id(
                             user_input, False, self.tmdb_api_key.get()
                         )
+                        if tid == "None":
+                            append_error("TMDb电影", msg)
                     if tid != "None":
                         results = [(t, tid, msg, meta)]
             else:
@@ -1228,8 +1261,31 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
                                 "release": it.get("air_date", ""),
                             }
                             results.append((title, str(it.get("id")), "搜索结果", meta))
-                    except Exception:
-                        pass
+                    except requests.exceptions.Timeout:
+                        append_error(
+                            "BGM",
+                            format_error_message(ERROR_CODE_TIMEOUT, "请求超时"),
+                        )
+                    except requests.exceptions.HTTPError as err:
+                        append_error(
+                            "BGM",
+                            format_error_message(
+                                ERROR_CODE_HTTP, f"HTTP请求失败: {err}"
+                            ),
+                        )
+                    except ValueError as err:
+                        append_error(
+                            "BGM",
+                            format_error_message(
+                                ERROR_CODE_PARSE, f"响应解析失败: {err}"
+                            ),
+                        )
+                    except Exception as err:
+                        logging.error(f"BGM手动搜索请求失败: {err}")
+                        append_error(
+                            "BGM",
+                            format_error_message(ERROR_CODE_UNKNOWN, "请求异常"),
+                        )
                 else:
                     # TMDb搜索
                     try:
@@ -1292,19 +1348,53 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
                                     meta,
                                 )
                             )
-                    except Exception:
-                        pass
+                    except requests.exceptions.Timeout:
+                        append_error(
+                            "TMDb",
+                            format_error_message(ERROR_CODE_TIMEOUT, "请求超时"),
+                        )
+                    except requests.exceptions.HTTPError as err:
+                        append_error(
+                            "TMDb",
+                            format_error_message(
+                                ERROR_CODE_HTTP, f"HTTP请求失败: {err}"
+                            ),
+                        )
+                    except ValueError as err:
+                        append_error(
+                            "TMDb",
+                            format_error_message(
+                                ERROR_CODE_PARSE, f"响应解析失败: {err}"
+                            ),
+                        )
+                    except Exception as err:
+                        logging.error(f"TMDb手动搜索请求失败: {err}")
+                        append_error(
+                            "TMDb",
+                            format_error_message(ERROR_CODE_UNKNOWN, "请求异常"),
+                        )
         except Exception as e:
             logging.error(f"手动匹配搜索失败: {e}")
+            append_error("手动匹配", format_error_message(ERROR_CODE_UNKNOWN, str(e)))
 
-        self.root.after(0, self._show_manual_match_results, selected_ids, results)
+        error_msg = "；".join(dict.fromkeys(search_errors)) if search_errors else ""
+        self.root.after(
+            0,
+            self._show_manual_match_results,
+            selected_ids,
+            results,
+            error_msg,
+        )
 
-    def _show_manual_match_results(self, selected_ids, results):
+    def _show_manual_match_results(self, selected_ids, results, error_msg=""):
         """显示手动匹配结果"""
         self.status.config(text="就绪")
 
         if not results:
-            messagebox.showinfo("无结果", "未找到匹配的条目")
+            if error_msg:
+                messagebox.showerror("搜索失败", error_msg)
+            else:
+                messagebox.showinfo("无结果", "未找到匹配的条目")
             return
 
         if len(results) == 1:
@@ -1541,21 +1631,83 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
             )
         except Exception as e:
             logging.error(f"更新UI失败: {e}")
-            err_msg = f"更新失败: {str(e)[:30]}"
+            err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"更新失败: {str(e)[:30]}")
             if item and item.get("id"):
                 self.root.after(
                     0,
                     lambda id_val=item["id"], msg=err_msg: self.tree.set(
-                        id_val, "st", msg
+                        id_val, "st", self._friendly_status_text(msg)
                     ),
                 )
             else:
-                self.root.after(0, lambda msg=err_msg: self.status.config(text=msg))
+                self.root.after(
+                    0,
+                    lambda msg=err_msg: self.status.config(
+                        text=self._friendly_status_text(msg)
+                    ),
+                )
 
     def _get_version_tag(self, path):
         """获取版本标签"""
         match = VERSION_TAG_RE.search(os.path.basename(path))
         return f" {match.group(0)}" if match else ""
+
+    def _friendly_status_text(self, message):
+        """Render coded errors to concise Chinese status text for the UI."""
+        raw_text = str(message or "").strip()
+        if not raw_text:
+            return ""
+
+        # Preserve normal status text (e.g. "复用", "TMDb命中") as-is.
+        has_error_hint = (
+            ":" in raw_text
+            or any(
+                token in raw_text
+                for token in (
+                    "超时",
+                    "未配置",
+                    "HTTP",
+                    "解析",
+                    "JSON",
+                    "无结果",
+                    "未匹配",
+                    "无效",
+                    "失败",
+                    "异常",
+                    "错误",
+                )
+            )
+        )
+        if not has_error_hint:
+            return raw_text
+
+        code, detail = parse_error_message(message)
+        if not code:
+            return raw_text
+
+        template = {
+            ERROR_CODE_TIMEOUT: "请求超时，请稍后重试",
+            ERROR_CODE_CONFIG: "配置缺失，请检查密钥设置",
+            ERROR_CODE_HTTP: "接口请求失败，请检查网络或服务状态",
+            ERROR_CODE_PARSE: "返回解析失败，请稍后重试",
+            ERROR_CODE_NO_RESULT: "未找到匹配结果",
+            ERROR_CODE_INVALID: "输入无效或资源不存在",
+            ERROR_CODE_UNKNOWN: "处理失败，请查看日志",
+        }.get(code, "处理失败，请查看日志")
+
+        if detail and code in {ERROR_CODE_HTTP, ERROR_CODE_UNKNOWN}:
+            return f"{template} ({detail[:24]})"
+        return template
+
+    def _build_status_text(self, *messages):
+        raw_parts = [str(m).strip() for m in messages if str(m or "").strip()]
+        if not raw_parts:
+            return ""
+
+        friendly_parts = [self._friendly_status_text(m) for m in raw_parts]
+        # Avoid duplicate fragments like "请求超时" from multiple providers.
+        merged = list(dict.fromkeys(friendly_parts))
+        return " / ".join(merged)
 
     def start_preview(self):
         """开始预览"""
@@ -1594,7 +1746,7 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
                 list(ex.map(self.process_task, range(total)))
         except Exception as e:
             logging.error(f"预览处理失败: {e}")
-            err_msg = f"处理失败: {e}"
+            err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"处理失败: {str(e)[:30]}")
             self.root.after(0, lambda msg=err_msg: messagebox.showerror("错误", msg))
 
         self.root.after(
@@ -1859,19 +2011,26 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
                         safe_std_t,
                         tid,
                         item["full_target"] or new_fn,
-                        f"{ai_msg}/{db_m}",
+                        self._build_status_text(ai_msg, db_m),
                     ),
                 ),
             )
         except Exception as ex:
             logging.error(f"处理文件 {item['old_name']} 时出错: {ex}")
-            err_msg = f"异常: {str(ex)[:50]}"
+            err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"异常: {str(ex)[:50]}")
             self.root.after(
                 0,
                 lambda id_val=item["id"],
                 old_name=item["old_name"],
                 msg=err_msg: self.tree.item(
-                    id_val, values=(old_name, "错误", "None", msg, "崩溃")
+                    id_val,
+                    values=(
+                        old_name,
+                        "错误",
+                        "None",
+                        self._friendly_status_text(msg),
+                        "崩溃",
+                    ),
                 ),
             )
         finally:
@@ -1986,17 +2145,21 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
             )
         except OSError as e:
             logging.error(f"系统错误 {item.get('path', '')}: {e}")
-            err_msg = f"系统错误: {str(e)[:20]}"
+            err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"系统错误: {str(e)[:20]}")
             self.root.after(
                 0,
-                lambda id_val=item["id"], msg=err_msg: self.tree.set(id_val, "st", msg),
+                lambda id_val=item["id"], msg=err_msg: self.tree.set(
+                    id_val, "st", self._friendly_status_text(msg)
+                ),
             )
         except Exception as e:
             logging.error(f"处理文件失败 {item.get('path', '')}: {e}")
-            err_msg = f"失败: {str(e)[:20]}"
+            err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"失败: {str(e)[:20]}")
             self.root.after(
                 0,
-                lambda id_val=item["id"], msg=err_msg: self.tree.set(id_val, "st", msg),
+                lambda id_val=item["id"], msg=err_msg: self.tree.set(
+                    id_val, "st", self._friendly_status_text(msg)
+                ),
             )
 
     def add_files(self):
@@ -2056,8 +2219,8 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
             for evt in self.db_resolution_events.values():
                 try:
                     evt.set()
-                except Exception:
-                    pass
+                except Exception as err:
+                    logging.debug(f"释放等待事件失败: {err}")
 
             self.dir_cache.clear()
             self.db_cache.clear()
