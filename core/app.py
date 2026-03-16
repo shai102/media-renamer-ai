@@ -123,6 +123,12 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.sf_model = tk.StringVar(
             value=self.config.get("sf_model", "deepseek-ai/DeepSeek-V3")
         )
+        self.ai_temperature = tk.StringVar(
+            value=f"{self._clamp_temperature(self.config.get('ai_temperature'), 0.2):.2f}"
+        )
+        self.ai_top_p = tk.StringVar(
+            value=f"{self._clamp_top_p(self.config.get('ai_top_p'), 0.9):.2f}"
+        )
         self.bgm_api_key = tk.StringVar(value=self.config.get("bgm_api_key", ""))
         self.tmdb_api_key = tk.StringVar(value=self.config.get("tmdb_api_key", ""))
         self.tv_format = tk.StringVar(
@@ -399,8 +405,32 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         win.grab_set()
         win.focus_set()
 
-        f = ttk.Frame(win, padding=20)
-        f.pack(fill=tk.BOTH, expand=True)
+        content_wrap = ttk.Frame(win)
+        content_wrap.pack(fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(content_wrap, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(content_wrap, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        f = ttk.Frame(canvas, padding=20)
+        canvas_window = canvas.create_window((0, 0), window=f, anchor="nw")
+
+        def _sync_scrollregion(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _sync_canvas_width(event):
+            canvas.itemconfigure(canvas_window, width=event.width)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        f.bind("<Configure>", _sync_scrollregion)
+        canvas.bind("<Configure>", _sync_canvas_width)
+        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
 
         row = 0
 
@@ -429,6 +459,20 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             row=row, column=0, sticky=tk.W, pady=5
         )
         ttk.Entry(f, textvariable=self.sf_model, width=45).grid(
+            row=row, column=1, pady=5, padx=10
+        )
+        row += 1
+
+        ttk.Label(f, text="AI 温度 temperature (0-2):").grid(
+            row=row, column=0, sticky=tk.W, pady=5
+        )
+        ttk.Entry(f, textvariable=self.ai_temperature, width=45).grid(
+            row=row, column=1, pady=5, padx=10
+        )
+        row += 1
+
+        ttk.Label(f, text="AI top_p (0-1):").grid(row=row, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(f, textvariable=self.ai_top_p, width=45).grid(
             row=row, column=1, pady=5, padx=10
         )
         row += 1
@@ -613,7 +657,11 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
     def _parse_with_ollama(self, filename):
         """调用本地 Ollama 模型解析文件名"""
         return parse_with_ollama(
-            self.ollama_url.get().strip(), self.ollama_model.get().strip(), filename
+            self.ollama_url.get().strip(),
+            self.ollama_model.get().strip(),
+            filename,
+            self._get_ai_temperature(),
+            self._get_ai_top_p(),
         )
 
     def _can_use_ollama_for_pick(self):
@@ -690,6 +738,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             is_tv,
             source_name,
             candidates,
+            self._get_ai_temperature(),
         )
 
     def _request_manual_candidate_choice(

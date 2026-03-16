@@ -237,15 +237,27 @@ def process_task(gui, i):
                     ai_data, ai_msg = gui._parse_with_ollama(pure)
                     if ai_data is None and gui.sf_api_key.get().strip():
                         ai_data, ai_msg = fetch_siliconflow_info(
-                            pure, gui.sf_api_key.get(), gui.sf_model.get()
+                            pure,
+                            gui.sf_api_key.get(),
+                            gui.sf_model.get(),
+                            gui._get_ai_temperature(),
+                            gui._get_ai_top_p(),
                         )
                 elif gui.sf_api_key.get().strip():
                     ai_data, ai_msg = fetch_siliconflow_info(
-                        pure, gui.sf_api_key.get(), gui.sf_model.get()
+                        pure,
+                        gui.sf_api_key.get(),
+                        gui.sf_model.get(),
+                        gui._get_ai_temperature(),
+                        gui._get_ai_top_p(),
                     )
             elif gui.sf_api_key.get().strip():
                 ai_data, ai_msg = fetch_siliconflow_info(
-                    pure, gui.sf_api_key.get(), gui.sf_model.get()
+                    pure,
+                    gui.sf_api_key.get(),
+                    gui.sf_model.get(),
+                    gui._get_ai_temperature(),
+                    gui._get_ai_top_p(),
                 )
 
             if ai_data:

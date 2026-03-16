@@ -51,10 +51,16 @@ class ConfigMixin:
         self.preview_workers.set(str(preview_workers))
         self.sync_workers.set(str(sync_workers))
         self.execution_workers.set(str(execution_workers))
+        ai_temperature = self._clamp_temperature(self.ai_temperature.get(), 0.2)
+        self.ai_temperature.set(f"{ai_temperature:.2f}")
+        ai_top_p = self._clamp_top_p(self.ai_top_p.get(), 0.9)
+        self.ai_top_p.set(f"{ai_top_p:.2f}")
 
         config_data = {
             "sf_api_key": self.sf_api_key.get().strip(),
             "sf_model": self.sf_model.get().strip(),
+            "ai_temperature": ai_temperature,
+            "ai_top_p": ai_top_p,
             "bgm_api_key": self.bgm_api_key.get().strip(),
             "tmdb_api_key": self.tmdb_api_key.get().strip(),
             "tv_format": self.tv_format.get(),
@@ -99,6 +105,26 @@ class ConfigMixin:
         """Normalize worker count to a safe desktop range."""
         num = safe_int(value, default)
         return max(1, min(10, num))
+
+    def _clamp_temperature(self, value, default=0.2):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        return max(0.0, min(2.0, number))
+
+    def _get_ai_temperature(self):
+        return self._clamp_temperature(self.ai_temperature.get(), 0.2)
+
+    def _clamp_top_p(self, value, default=0.9):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        return max(0.0, min(1.0, number))
+
+    def _get_ai_top_p(self):
+        return self._clamp_top_p(self.ai_top_p.get(), 0.9)
 
     def _get_preview_workers(self):
         return self._clamp_workers(self.preview_workers.get(), 5)

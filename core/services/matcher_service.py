@@ -66,7 +66,23 @@ def list_ollama_models(base_url):
         return [], f"读取本地模型失败: {err}"
 
 
-def parse_with_ollama(base_url, model, filename):
+def _normalize_top_p(value, default=0.9):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return max(0.0, min(1.0, number))
+
+
+def _normalize_temperature(value, default=0.2):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return max(0.0, min(2.0, number))
+
+
+def parse_with_ollama(base_url, model, filename, temperature=0.2, top_p=0.9):
     """Parse media filename using local Ollama model."""
     model = str(model or "").strip()
     if not str(base_url or "").strip() or not model:
@@ -104,7 +120,11 @@ def parse_with_ollama(base_url, model, filename):
             {"role": "user", "content": filename},
         ],
         "stream": False,
-        "options": {"temperature": 0.2, "top_p": 0.9, "num_predict": 200},
+        "options": {
+            "temperature": _normalize_temperature(temperature),
+            "top_p": _normalize_top_p(top_p),
+            "num_predict": 200,
+        },
         "timeout": 90,
     }
 
@@ -242,7 +262,17 @@ def rerank_candidates_with_embedding(item, query_title, year, is_tv, source_name
     return ranked, None, rank_msg
 
 
-def pick_candidate_with_ollama(base_url, model, item, query_title, year, is_tv, source_name, candidates):
+def pick_candidate_with_ollama(
+    base_url,
+    model,
+    item,
+    query_title,
+    year,
+    is_tv,
+    source_name,
+    candidates,
+    temperature=0.2,
+):
     if not str(base_url or "").strip() or not str(model or "").strip():
         return None, "未配置本地模型"
 
@@ -273,7 +303,7 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
             {"role": "user", "content": prompt},
         ],
         "stream": False,
-        "options": {"temperature": 0.2},
+        "options": {"temperature": _normalize_temperature(temperature)},
         "timeout": 120,
     }
 

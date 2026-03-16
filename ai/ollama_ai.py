@@ -52,7 +52,29 @@ def _extract_siliconflow_content(payload):
     return content.strip()
 
 
-def fetch_siliconflow_info(filename, api_key, model_name="deepseek-ai/DeepSeek-V3"):
+def _normalize_top_p(value, default=0.9):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return max(0.0, min(1.0, number))
+
+
+def _normalize_temperature(value, default=0.2):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    return max(0.0, min(2.0, number))
+
+
+def fetch_siliconflow_info(
+    filename,
+    api_key,
+    model_name="deepseek-ai/DeepSeek-V3",
+    temperature=0.2,
+    top_p=0.9,
+):
     """Use SiliconFlow to parse title/year/season/episode from filename."""
     if not api_key or not api_key.strip():
         return None, format_error_message(ERROR_CODE_CONFIG, "未配置 AI Key")
@@ -96,7 +118,8 @@ def fetch_siliconflow_info(filename, api_key, model_name="deepseek-ai/DeepSeek-V
             {"role": "system", "content": prompt},
             {"role": "user", "content": filename},
         ],
-        "temperature": 0.2,
+        "temperature": _normalize_temperature(temperature),
+        "top_p": _normalize_top_p(top_p),
         "max_tokens": 500,
     }
 
