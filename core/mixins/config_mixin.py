@@ -58,6 +58,7 @@ class ConfigMixin:
 
         config_data = {
             "sf_api_key": self.sf_api_key.get().strip(),
+            "sf_api_url": self.sf_api_url.get().strip(),
             "sf_model": self.sf_model.get().strip(),
             "ai_temperature": ai_temperature,
             "ai_top_p": ai_top_p,

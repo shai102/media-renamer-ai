@@ -261,7 +261,7 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                     res = session.get(
                         f"https://api.bgm.tv/search/subject/{query}?type=2",
                         headers=headers,
-                        timeout=15,
+                        timeout=60,
                     )
                     res.raise_for_status()
                     items = res.json().get("list", [])
@@ -304,7 +304,7 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                             "query": user_input,
                             "language": "zh-CN",
                         },
-                        timeout=15,
+                        timeout=60,
                     )
                     res_tv.raise_for_status()
                     tv_results = res_tv.json().get("results", [])[:3]
@@ -326,7 +326,7 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                             "query": user_input,
                             "language": "zh-CN",
                         },
-                        timeout=15,
+                        timeout=60,
                     )
                     res_movie.raise_for_status()
                     movie_results = res_movie.json().get("results", [])[:2]

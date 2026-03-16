@@ -98,12 +98,13 @@ from utils.helpers import (
     write_nfo,
 )
 
+
 class MediaRenamerGUI(ConfigMixin, ListMixin):
     """主GUI类"""
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v0.9")
+        self.root.title("媒体归档刮削助手 v1.0")
         self.root.geometry("1300x900")
 
         self.file_list = []
@@ -120,6 +121,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.config = self.load_config()
         self.target_root = tk.StringVar(value="")
         self.sf_api_key = tk.StringVar(value=self.config.get("sf_api_key", ""))
+        self.sf_api_url = tk.StringVar(
+            value=self.config.get("sf_api_url", "https://api.siliconflow.cn/v1")
+        )
         self.sf_model = tk.StringVar(
             value=self.config.get("sf_model", "deepseek-ai/DeepSeek-V3")
         )
@@ -234,7 +238,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                     if not os.path.exists(ep_nfo):
                         write_nfo(ep_nfo, m, "episodedetails")
 
-                    thumb_source = m.get("still") or m.get("s_poster") or m.get("poster")
+                    thumb_source = (
+                        m.get("still") or m.get("s_poster") or m.get("poster")
+                    )
                     if thumb_source:
                         thumb_path = os.path.splitext(target_path)[0] + "-thumb.jpg"
                         if not os.path.exists(thumb_path):
@@ -242,7 +248,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
                 cur_dir = target_dir
                 dir_name = os.path.basename(cur_dir)
-                is_season_folder = bool(re.match(r"^(Season\s*\d+|S\d+)$", dir_name, re.I))
+                is_season_folder = bool(
+                    re.match(r"^(Season\s*\d+|S\d+)$", dir_name, re.I)
+                )
 
                 if is_season_folder and os.path.dirname(cur_dir):
                     root_d = os.path.dirname(cur_dir)
@@ -308,7 +316,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Button(
             p_frame,
             text="选择目录",
-            command=lambda: self.target_root.set(filedialog.askdirectory(parent=self.root)),
+            command=lambda: self.target_root.set(
+                filedialog.askdirectory(parent=self.root)
+            ),
         ).pack(side=tk.LEFT, padx=5)
 
         # 顶部工具栏
@@ -409,7 +419,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         content_wrap.pack(fill=tk.BOTH, expand=True)
 
         canvas = tk.Canvas(content_wrap, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(content_wrap, orient=tk.VERTICAL, command=canvas.yview)
+        scrollbar = ttk.Scrollbar(
+            content_wrap, orient=tk.VERTICAL, command=canvas.yview
+        )
         canvas.configure(yscrollcommand=scrollbar.set)
 
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -429,7 +441,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
         f.bind("<Configure>", _sync_scrollregion)
         canvas.bind("<Configure>", _sync_canvas_width)
-        canvas.bind("<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        canvas.bind(
+            "<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        )
         canvas.bind("<Leave>", lambda _e: canvas.unbind_all("<MouseWheel>"))
 
         row = 0
@@ -455,9 +469,26 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
         row += 1
 
-        ttk.Label(f, text="SiliconFlow 模型名:").grid(
+        ttk.Label(f, text="API URL (OpenAI兼容):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
+        ttk.Entry(f, textvariable=self.sf_api_url, width=45).grid(
+            row=row, column=1, pady=5, padx=10
+        )
+        ttk.Button(
+            f,
+            text="测试连接",
+            command=lambda: self._test_silicon_api(sf_test_status_var),
+        ).grid(row=row, column=2, sticky=tk.W, pady=5)
+        row += 1
+
+        sf_test_status_var = tk.StringVar(value="")
+        ttk.Label(f, textvariable=sf_test_status_var).grid(
+            row=row, column=1, sticky=tk.W, padx=10
+        )
+        row += 1
+
+        ttk.Label(f, text="模型名称:").grid(row=row, column=0, sticky=tk.W, pady=5)
         ttk.Entry(f, textvariable=self.sf_model, width=45).grid(
             row=row, column=1, pady=5, padx=10
         )
@@ -471,7 +502,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
         row += 1
 
-        ttk.Label(f, text="AI top_p (0-1):").grid(row=row, column=0, sticky=tk.W, pady=5)
+        ttk.Label(f, text="AI top_p (0-1):").grid(
+            row=row, column=0, sticky=tk.W, pady=5
+        )
         ttk.Entry(f, textvariable=self.ai_top_p, width=45).grid(
             row=row, column=1, pady=5, padx=10
         )
@@ -497,9 +530,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             textvariable=self.ollama_model,
             width=45,
         )
-        ollama_model_combo.grid(
-            row=row, column=1, pady=5, padx=10
-        )
+        ollama_model_combo.grid(row=row, column=1, pady=5, padx=10)
         row += 1
 
         ttk.Label(f, text="Embedding 模型:").grid(
@@ -510,9 +541,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             textvariable=self.embedding_model,
             width=45,
         )
-        embedding_model_combo.grid(
-            row=row, column=1, pady=5, padx=10
-        )
+        embedding_model_combo.grid(row=row, column=1, pady=5, padx=10)
         row += 1
 
         ollama_status_var = tk.StringVar(value="正在读取本地模型列表...")
@@ -654,6 +683,23 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         if show_message:
             messagebox.showwarning("Ollama模型列表", message, parent=self.root)
 
+    def _test_silicon_api(self, status_var):
+        """测试 OpenAI 兼容 API 连接"""
+        from ai.ollama_ai import test_silicon_api
+
+        api_url = self.sf_api_url.get().strip()
+        api_key = self.sf_api_key.get().strip()
+        model = self.sf_model.get().strip()
+
+        status_var.set("测试中...")
+        self.root.update_idletasks()
+
+        success, message = test_silicon_api(api_url, api_key, model)
+        if success:
+            status_var.set(f"✓ {message}")
+        else:
+            status_var.set(f"✗ {message}")
+
     def _parse_with_ollama(self, filename):
         """调用本地 Ollama 模型解析文件名"""
         return parse_with_ollama(
@@ -680,7 +726,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         """直接请求本地 Ollama，避免全局 session 的重试拖慢处理。"""
         from core.services.matcher_service import ollama_post_json
 
-        return ollama_post_json(self.ollama_url.get().strip(), endpoint, payload, timeout)
+        return ollama_post_json(
+            self.ollama_url.get().strip(), endpoint, payload, timeout
+        )
 
     def _cosine_similarity(self, vec_a, vec_b):
         """计算余弦相似度"""
@@ -912,7 +960,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         else:
             if not self.sf_api_key.get().strip():
                 messagebox.showwarning(
-                    "缺少API密钥", "请先配置SiliconFlow API Key或启用Ollama。", parent=self.root
+                    "缺少API密钥",
+                    "请先配置SiliconFlow API Key或启用Ollama。",
+                    parent=self.root,
                 )
                 return
 
@@ -956,6 +1006,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
     def process_one_file(self, item, is_archive):
         """处理单个文件"""
         return worker_process_one_file(self, item, is_archive)
+
 
 if __name__ == "__main__":
     root = tk.Tk()

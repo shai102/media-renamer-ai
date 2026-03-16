@@ -49,7 +49,7 @@ def list_ollama_models(base_url):
         return [], "Ollama URL 未配置"
 
     try:
-        response = requests.get(normalized + "/api/tags", timeout=10)
+        response = requests.get(normalized + "/api/tags", timeout=60)
         response.raise_for_status()
         try:
             payload = response.json()
@@ -125,11 +125,11 @@ def parse_with_ollama(base_url, model, filename, temperature=0.2, top_p=0.9):
             "top_p": _normalize_top_p(top_p),
             "num_predict": 200,
         },
-        "timeout": 90,
+        "timeout": 60,
     }
 
     try:
-        response = ollama_post_json(base_url, "/api/chat", payload, timeout=90)
+        response = ollama_post_json(base_url, "/api/chat", payload, timeout=60)
         response.raise_for_status()
         resp = response.json()
 
@@ -198,7 +198,7 @@ def get_embedding(base_url, embedding_model, text, cache, cache_lock, preferred_
 
     for endpoint in endpoints:
         try:
-            response = ollama_post_json(base_url, endpoint, payload, timeout=30)
+            response = ollama_post_json(base_url, endpoint, payload, timeout=60)
             if response.status_code == 404:
                 continue
             response.raise_for_status()
@@ -304,11 +304,11 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
         ],
         "stream": False,
         "options": {"temperature": _normalize_temperature(temperature)},
-        "timeout": 120,
+        "timeout": 60,
     }
 
     try:
-        response = ollama_post_json(base_url, "/api/chat", payload, timeout=90)
+        response = ollama_post_json(base_url, "/api/chat", payload, timeout=60)
         response.raise_for_status()
         resp = response.json()
         content = resp.get("message", {}).get("content", "").strip()

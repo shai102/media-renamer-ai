@@ -453,7 +453,7 @@ def save_image(path, url_part):
         if os.path.exists(path):
             return
 
-        res = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
+        res = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
         if res.status_code == 200:
             with open(path, "wb") as f:
                 f.write(res.content)

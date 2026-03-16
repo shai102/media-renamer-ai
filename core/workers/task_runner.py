@@ -50,7 +50,11 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
         path_key = item["path"]
 
         forced_s = gui.forced_seasons.get(path_key)
-        s = forced_s if forced_s is not None else gui._pick_season(pure, g, m.get("s", 1))
+        s = (
+            forced_s
+            if forced_s is not None
+            else gui._pick_season(pure, g, m.get("s", 1))
+        )
 
         raw_e = g.get("episode") or m.get("e", 1)
         if isinstance(raw_e, list):
@@ -148,11 +152,15 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
             folder_name = safe_filename(f"{safe_title} [{id_tag}]")
             season_folder = f"Season {s}"
             if is_tv:
-                item["full_target"] = os.path.join(root_d, folder_name, season_folder, new_fn)
+                item["full_target"] = os.path.join(
+                    root_d, folder_name, season_folder, new_fn
+                )
             else:
                 year_text = safe_str(y)
                 if year_text:
-                    folder_name = safe_filename(f"{safe_title} ({year_text}) [{id_tag}]")
+                    folder_name = safe_filename(
+                        f"{safe_title} ({year_text}) [{id_tag}]"
+                    )
                 else:
                     folder_name = safe_filename(f"{safe_title} [{id_tag}]")
                 item["full_target"] = os.path.join(root_d, folder_name, new_fn)
@@ -163,7 +171,13 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
             0,
             lambda: gui.tree.item(
                 item["id"],
-                values=(item["old_name"], safe_title, t_id, item["full_target"] or new_fn, msg),
+                values=(
+                    item["old_name"],
+                    safe_title,
+                    t_id,
+                    item["full_target"] or new_fn,
+                    msg,
+                ),
             ),
         )
     except Exception as err:
@@ -177,7 +191,12 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
                 ),
             )
         else:
-            gui.root.after(0, lambda msg=err_msg: gui.status.config(text=gui._friendly_status_text(msg)))
+            gui.root.after(
+                0,
+                lambda msg=err_msg: gui.status.config(
+                    text=gui._friendly_status_text(msg)
+                ),
+            )
 
 
 def run_preview_pool(gui):
@@ -210,7 +229,9 @@ def process_task(gui, i):
     item = gui.file_list[i]
 
     try:
-        gui.root.after(0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "识别中"))
+        gui.root.after(
+            0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "识别中")
+        )
         pure, ext = gui.extract_lang_and_ext(item["old_name"])
         dir_p = item["dir"]
         mode = gui.source_var.get()
@@ -239,6 +260,7 @@ def process_task(gui, i):
                         ai_data, ai_msg = fetch_siliconflow_info(
                             pure,
                             gui.sf_api_key.get(),
+                            gui.sf_api_url.get(),
                             gui.sf_model.get(),
                             gui._get_ai_temperature(),
                             gui._get_ai_top_p(),
@@ -247,6 +269,7 @@ def process_task(gui, i):
                     ai_data, ai_msg = fetch_siliconflow_info(
                         pure,
                         gui.sf_api_key.get(),
+                        gui.sf_api_url.get(),
                         gui.sf_model.get(),
                         gui._get_ai_temperature(),
                         gui._get_ai_top_p(),
@@ -255,6 +278,7 @@ def process_task(gui, i):
                 ai_data, ai_msg = fetch_siliconflow_info(
                     pure,
                     gui.sf_api_key.get(),
+                    gui.sf_api_url.get(),
                     gui.sf_model.get(),
                     gui._get_ai_temperature(),
                     gui._get_ai_top_p(),
@@ -429,11 +453,15 @@ def process_task(gui, i):
             season_folder = f"Season {s}"
 
             if is_tv:
-                item["full_target"] = os.path.join(root_d, folder_name, season_folder, new_fn)
+                item["full_target"] = os.path.join(
+                    root_d, folder_name, season_folder, new_fn
+                )
             else:
                 year_text = safe_str(y)
                 if year_text:
-                    folder_name = safe_filename(f"{safe_std_t} ({year_text}) [{id_tag}]")
+                    folder_name = safe_filename(
+                        f"{safe_std_t} ({year_text}) [{id_tag}]"
+                    )
                 else:
                     folder_name = safe_filename(f"{safe_std_t} [{id_tag}]")
                 item["full_target"] = os.path.join(root_d, folder_name, new_fn)
@@ -458,9 +486,17 @@ def process_task(gui, i):
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"异常: {str(ex)[:50]}")
         gui.root.after(
             0,
-            lambda id_val=item["id"], old_name=item["old_name"], msg=err_msg: gui.tree.item(
+            lambda id_val=item["id"],
+            old_name=item["old_name"],
+            msg=err_msg: gui.tree.item(
                 id_val,
-                values=(old_name, "错误", "None", gui._friendly_status_text(msg), "崩溃"),
+                values=(
+                    old_name,
+                    "错误",
+                    "None",
+                    gui._friendly_status_text(msg),
+                    "崩溃",
+                ),
             ),
         )
     finally:
@@ -481,7 +517,10 @@ def run_execution(gui, is_archive):
 
     try:
         with ThreadPoolExecutor(max_workers=gui._get_execution_workers()) as executor:
-            futures = [executor.submit(gui.process_one_file, item, is_archive) for item in gui.file_list]
+            futures = [
+                executor.submit(gui.process_one_file, item, is_archive)
+                for item in gui.file_list
+            ]
             for future in as_completed(futures):
                 gui.root.after(0, lambda: gui.pbar.step(1))
                 try:
@@ -505,10 +544,14 @@ def process_one_file(gui, item, is_archive):
         if is_archive and item.get("full_target"):
             target = item["full_target"]
         else:
-            target = os.path.join(item["dir"], item.get("new_name_only", item["old_name"]))
+            target = os.path.join(
+                item["dir"], item.get("new_name_only", item["old_name"])
+            )
 
         if not os.path.exists(item["path"]):
-            gui.root.after(0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "源文件不存在"))
+            gui.root.after(
+                0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "源文件不存在")
+            )
             return
 
         target_dir = os.path.dirname(target)
@@ -520,7 +563,9 @@ def process_one_file(gui, item, is_archive):
         is_case_change_only = os.path.normcase(current_path) == os.path.normcase(target)
 
         if not same_exact_path and not is_case_change_only and os.path.exists(target):
-            gui.root.after(0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "目标已存在"))
+            gui.root.after(
+                0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "目标已存在")
+            )
             return
 
         if not same_exact_path:
@@ -530,11 +575,15 @@ def process_one_file(gui, item, is_archive):
             item["path"] = target
 
         gui._write_sidecar_files(item, item["path"])
-        gui.root.after(0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "刮削完成"))
+        gui.root.after(
+            0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "刮削完成")
+        )
 
     except PermissionError as err:
         logging.error(f"权限错误 {item.get('path', '')}: {err}")
-        gui.root.after(0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "权限错误"))
+        gui.root.after(
+            0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "权限错误")
+        )
     except OSError as err:
         logging.error(f"系统错误 {item.get('path', '')}: {err}")
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"系统错误: {str(err)[:20]}")

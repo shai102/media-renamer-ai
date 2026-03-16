@@ -71,17 +71,18 @@ def _normalize_temperature(value, default=0.2):
 def fetch_siliconflow_info(
     filename,
     api_key,
+    api_url="https://api.siliconflow.cn/v1",
     model_name="deepseek-ai/DeepSeek-V3",
     temperature=0.2,
     top_p=0.9,
 ):
-    """Use SiliconFlow to parse title/year/season/episode from filename."""
+    """Use OpenAI-compatible API to parse title/year/season/episode from filename."""
     if not api_key or not api_key.strip():
         return None, format_error_message(ERROR_CODE_CONFIG, "未配置 AI Key")
 
     model = (model_name or "").strip() or "deepseek-ai/DeepSeek-V3"
-
-    url = "https://api.siliconflow.cn/v1/chat/completions"
+    base_url = (api_url or "https://api.siliconflow.cn/v1").strip().rstrip("/")
+    url = f"{base_url}/chat/completions"
     prompt = r"""
 你是动漫/影视文件名解析助手。
 
@@ -124,7 +125,7 @@ def fetch_siliconflow_info(
     }
 
     try:
-        response = session.post(url, json=payload, headers=headers, timeout=15)
+        response = session.post(url, json=payload, headers=headers, timeout=60)
         response.raise_for_status()
 
         try:
@@ -141,7 +142,9 @@ def fetch_siliconflow_info(
             snippet = _response_body_snippet(response)
             if snippet:
                 logging.warning(f"SiliconFlow响应结构异常: {err}，返回内容: {snippet}")
-            return None, format_error_message(ERROR_CODE_PARSE, f"AI响应结构异常: {err}")
+            return None, format_error_message(
+                ERROR_CODE_PARSE, f"AI响应结构异常: {err}"
+            )
 
         result_text = re.sub(
             r"^```(?:json)?\s*|\s*```$", "", result_text, flags=re.IGNORECASE
@@ -152,7 +155,9 @@ def fetch_siliconflow_info(
         except json.JSONDecodeError as err:
             compact = " ".join(str(result_text or "").split())
             if compact:
-                logging.warning(f"SiliconFlow内容JSON解析失败: {err}，内容: {compact[:300]}")
+                logging.warning(
+                    f"SiliconFlow内容JSON解析失败: {err}，内容: {compact[:300]}"
+                )
             return None, format_error_message(ERROR_CODE_PARSE, "AI返回JSON解析失败")
         if not isinstance(data, dict):
             return None, format_error_message(ERROR_CODE_PARSE, "AI返回JSON不是对象")
@@ -166,11 +171,15 @@ def fetch_siliconflow_info(
             )
 
         if not isinstance(data.get("title"), str):
-            return None, format_error_message(ERROR_CODE_PARSE, "AI返回字段类型异常: title")
+            return None, format_error_message(
+                ERROR_CODE_PARSE, "AI返回字段类型异常: title"
+            )
 
         year_val = data.get("year")
         if year_val is not None and not isinstance(year_val, (int, str)):
-            return None, format_error_message(ERROR_CODE_PARSE, "AI返回字段类型异常: year")
+            return None, format_error_message(
+                ERROR_CODE_PARSE, "AI返回字段类型异常: year"
+            )
 
         try:
             season = int(data.get("season"))
@@ -201,3 +210,55 @@ def fetch_siliconflow_info(
         return None, format_error_message(ERROR_CODE_HTTP, f"AI请求失败: {err}")
     except Exception as err:
         return None, format_error_message(ERROR_CODE_UNKNOWN, f"AI失败: {str(err)}")
+
+
+def test_silicon_api(api_url, api_key, model_name):
+    """Test OpenAI-compatible API connection. Returns (success, message)."""
+    if not api_key or not api_key.strip():
+        return False, "未配置 API Key"
+
+    base_url = (api_url or "").strip().rstrip("/")
+    if not base_url:
+        return False, "未配置 API URL"
+
+    url = f"{base_url}/chat/completions"
+    model = (model_name or "").strip()
+    if not model:
+        return False, "未配置模型名称"
+
+    headers = {
+        "Authorization": f"Bearer {api_key.strip()}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Hi"}],
+        "max_tokens": 10,
+    }
+
+    try:
+        response = session.post(url, json=payload, headers=headers, timeout=60)
+        response.raise_for_status()
+
+        try:
+            result = response.json()
+        except ValueError:
+            snippet = _response_body_snippet(response)
+            return False, f"响应非JSON: {snippet[:100] if snippet else '空响应'}"
+
+        try:
+            _extract_siliconflow_content(result)
+            return True, f"连接成功! 模型: {model}"
+        except ValueError as err:
+            return False, f"响应结构异常: {err}"
+
+    except requests.exceptions.Timeout:
+        return False, "请求超时 (60秒)"
+    except requests.exceptions.HTTPError as err:
+        status = getattr(err.response, "status_code", "未知")
+        snippet = _response_body_snippet(getattr(err, "response", None))
+        detail = snippet[:100] if snippet else ""
+        return False, f"HTTP错误 {status}: {detail}"
+    except Exception as err:
+        return False, f"连接失败: {str(err)}"
