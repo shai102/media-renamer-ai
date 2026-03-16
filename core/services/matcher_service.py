@@ -23,6 +23,49 @@ def ollama_post_json(base_url, endpoint, payload, timeout):
     return requests.post(normalized + endpoint, json=payload, timeout=timeout)
 
 
+def extract_ollama_model_names(payload):
+    """Extract installed model names from Ollama /api/tags response."""
+    if not isinstance(payload, dict):
+        raise ValueError("Ollama响应不是JSON对象")
+
+    models = payload.get("models")
+    if not isinstance(models, list):
+        raise ValueError("Ollama响应缺少models列表")
+
+    names = []
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def list_ollama_models(base_url):
+    """List installed local Ollama models from the configured server."""
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized:
+        return [], "Ollama URL 未配置"
+
+    try:
+        response = requests.get(normalized + "/api/tags", timeout=10)
+        response.raise_for_status()
+        try:
+            payload = response.json()
+        except ValueError:
+            return [], "Ollama返回非JSON响应"
+
+        names = extract_ollama_model_names(payload)
+        if not names:
+            return [], "未发现本地已安装模型"
+        return names, "已获取本地模型列表"
+    except requests.exceptions.Timeout:
+        return [], "读取本地模型超时"
+    except Exception as err:
+        return [], f"读取本地模型失败: {err}"
+
+
 def parse_with_ollama(base_url, model, filename):
     """Parse media filename using local Ollama model."""
     model = str(model or "").strip()

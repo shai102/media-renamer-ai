@@ -30,6 +30,7 @@ from db.tmdb_api import (
 )
 from core.services.matcher_service import (
     get_embedding,
+    list_ollama_models,
     parse_with_ollama,
     pick_candidate_with_ollama,
     rerank_candidates_with_embedding,
@@ -112,7 +113,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v73.0 (全自定义免打包版)")
+        self.root.title("媒体归档刮削助手 v0.8")
         self.root.geometry("1300x900")
 
         self.file_list = []
@@ -182,6 +183,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
         self.embedding_cache = {}
         self.ollama_embed_endpoint = None
+        self.ollama_model_options = []
 
         self.create_widgets()
         self.apply_saved_window_geometry()
@@ -442,10 +444,22 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Entry(f, textvariable=self.ollama_url, width=45).grid(
             row=row, column=1, pady=5, padx=10
         )
+        ttk.Button(
+            f,
+            text="刷新模型",
+            command=lambda: self._refresh_ollama_model_options(
+                ollama_model_combo, embedding_model_combo, ollama_status_var, True
+            ),
+        ).grid(row=row, column=2, sticky=tk.W, pady=5)
         row += 1
 
         ttk.Label(f, text="Ollama 模型:").grid(row=row, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(f, textvariable=self.ollama_model, width=45).grid(
+        ollama_model_combo = ttk.Combobox(
+            f,
+            textvariable=self.ollama_model,
+            width=45,
+        )
+        ollama_model_combo.grid(
             row=row, column=1, pady=5, padx=10
         )
         row += 1
@@ -453,8 +467,19 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Label(f, text="Embedding 模型:").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.embedding_model, width=45).grid(
+        embedding_model_combo = ttk.Combobox(
+            f,
+            textvariable=self.embedding_model,
+            width=45,
+        )
+        embedding_model_combo.grid(
             row=row, column=1, pady=5, padx=10
+        )
+        row += 1
+
+        ollama_status_var = tk.StringVar(value="正在读取本地模型列表...")
+        ttk.Label(f, textvariable=ollama_status_var).grid(
+            row=row, column=1, sticky=tk.W, padx=10
         )
         row += 1
 
@@ -544,6 +569,52 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             text="保存并生效 (无需重启)",
             command=lambda: [self.save_config(), win.destroy()],
         ).grid(row=row, column=1, sticky=tk.E, pady=15)
+
+        self._refresh_ollama_model_options(
+            ollama_model_combo, embedding_model_combo, ollama_status_var, False
+        )
+
+    def _set_ollama_combobox_values(self, combobox, current_value, values):
+        """更新下拉框候选值，同时保留当前值。"""
+        items = []
+        current_text = str(current_value or "").strip()
+        if current_text:
+            items.append(current_text)
+        for value in values or []:
+            clean_value = str(value or "").strip()
+            if clean_value and clean_value not in items:
+                items.append(clean_value)
+        combobox["values"] = items
+        if current_text:
+            combobox.set(current_text)
+
+    def _refresh_ollama_model_options(
+        self, ollama_combobox, embedding_combobox, status_var, show_message=False
+    ):
+        """从本地 Ollama 服务读取已安装模型，并刷新下拉框。"""
+        models, message = list_ollama_models(self.ollama_url.get().strip())
+        if models:
+            self.ollama_model_options = models
+            self._set_ollama_combobox_values(
+                ollama_combobox, self.ollama_model.get(), models
+            )
+            self._set_ollama_combobox_values(
+                embedding_combobox, self.embedding_model.get(), models
+            )
+            status_var.set(f"已加载 {len(models)} 个本地模型")
+            return
+
+        self._set_ollama_combobox_values(
+            ollama_combobox, self.ollama_model.get(), self.ollama_model_options
+        )
+        self._set_ollama_combobox_values(
+            embedding_combobox,
+            self.embedding_model.get(),
+            self.ollama_model_options,
+        )
+        status_var.set(message)
+        if show_message:
+            messagebox.showwarning("Ollama模型列表", message)
 
     def _parse_with_ollama(self, filename):
         """调用本地 Ollama 模型解析文件名"""
