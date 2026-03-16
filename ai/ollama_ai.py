@@ -1,3 +1,4 @@
+import logging
 import json
 import re
 
@@ -5,12 +6,26 @@ import requests
 
 from utils.helpers import (
     ERROR_CODE_CONFIG,
+    ERROR_CODE_HTTP,
     ERROR_CODE_PARSE,
     ERROR_CODE_TIMEOUT,
     ERROR_CODE_UNKNOWN,
     format_error_message,
     session,
 )
+
+
+def _response_body_snippet(response, limit=300):
+    if response is None:
+        return ""
+    try:
+        body = response.text or ""
+    except Exception:
+        return ""
+    compact = " ".join(str(body).split())
+    if len(compact) > limit:
+        return compact[:limit] + "..."
+    return compact
 
 
 def _extract_siliconflow_content(payload):
@@ -81,7 +96,7 @@ def fetch_siliconflow_info(filename, api_key, model_name="deepseek-ai/DeepSeek-V
             {"role": "system", "content": prompt},
             {"role": "user", "content": filename},
         ],
-        "temperature": 0.1,
+        "temperature": 0.2,
         "max_tokens": 500,
     }
 
@@ -92,18 +107,30 @@ def fetch_siliconflow_info(filename, api_key, model_name="deepseek-ai/DeepSeek-V
         try:
             response_payload = response.json()
         except ValueError:
+            snippet = _response_body_snippet(response)
+            if snippet:
+                logging.warning(f"SiliconFlow返回非JSON，返回内容: {snippet}")
             return None, format_error_message(ERROR_CODE_PARSE, "AI返回非JSON响应")
 
         try:
             result_text = _extract_siliconflow_content(response_payload)
         except ValueError as err:
+            snippet = _response_body_snippet(response)
+            if snippet:
+                logging.warning(f"SiliconFlow响应结构异常: {err}，返回内容: {snippet}")
             return None, format_error_message(ERROR_CODE_PARSE, f"AI响应结构异常: {err}")
 
         result_text = re.sub(
             r"^```(?:json)?\s*|\s*```$", "", result_text, flags=re.IGNORECASE
         )
 
-        data = json.loads(result_text)
+        try:
+            data = json.loads(result_text)
+        except json.JSONDecodeError as err:
+            compact = " ".join(str(result_text or "").split())
+            if compact:
+                logging.warning(f"SiliconFlow内容JSON解析失败: {err}，内容: {compact[:300]}")
+            return None, format_error_message(ERROR_CODE_PARSE, "AI返回JSON解析失败")
         if not isinstance(data, dict):
             return None, format_error_message(ERROR_CODE_PARSE, "AI返回JSON不是对象")
 
@@ -144,7 +171,10 @@ def fetch_siliconflow_info(filename, api_key, model_name="deepseek-ai/DeepSeek-V
         return normalized, "AI解析成功"
     except requests.exceptions.Timeout:
         return None, format_error_message(ERROR_CODE_TIMEOUT, "AI请求超时")
-    except json.JSONDecodeError:
-        return None, format_error_message(ERROR_CODE_PARSE, "AI返回JSON解析失败")
+    except requests.exceptions.HTTPError as err:
+        snippet = _response_body_snippet(getattr(err, "response", None))
+        if snippet:
+            logging.warning(f"SiliconFlow请求HTTP失败: {err}，返回内容: {snippet}")
+        return None, format_error_message(ERROR_CODE_HTTP, f"AI请求失败: {err}")
     except Exception as err:
         return None, format_error_message(ERROR_CODE_UNKNOWN, f"AI失败: {str(err)}")

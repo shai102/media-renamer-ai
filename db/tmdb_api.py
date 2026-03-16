@@ -22,6 +22,19 @@ from utils.helpers import (
 )
 
 
+def _response_body_snippet(response, limit=300):
+    if response is None:
+        return ""
+    try:
+        body = response.text or ""
+    except Exception:
+        return ""
+    compact = " ".join(str(body).split())
+    if len(compact) > limit:
+        return compact[:limit] + "..."
+    return compact
+
+
 def fetch_bgm_by_id_raw(subject_id, api_key=""):
     headers = {"User-Agent": USER_AGENT}
     if api_key and api_key.strip():
@@ -56,8 +69,14 @@ def fetch_bgm_by_id_raw(subject_id, api_key=""):
             msg = format_error_message(ERROR_CODE_INVALID, "ID无效")
         else:
             msg = format_error_message(ERROR_CODE_HTTP, f"HTTP请求失败: {err}")
+        snippet = _response_body_snippet(getattr(err, "response", None))
+        if snippet:
+            logging.warning(f"BGM按ID查询HTTP失败，返回内容: {snippet}")
         return str(subject_id), "None", msg, {}
     except ValueError:
+        snippet = _response_body_snippet(locals().get("response"))
+        if snippet:
+            logging.warning(f"BGM按ID查询解析失败，返回内容: {snippet}")
         return (
             str(subject_id),
             "None",
@@ -123,6 +142,16 @@ def fetch_bgm_candidates_raw(title, api_key=""):
             )
         return candidates
     except requests.exceptions.Timeout:
+        return []
+    except requests.exceptions.HTTPError as err:
+        snippet = _response_body_snippet(getattr(err, "response", None))
+        if snippet:
+            logging.warning(f"BGM候选搜索HTTP失败，返回内容: {snippet}")
+        return []
+    except ValueError:
+        snippet = _response_body_snippet(locals().get("response"))
+        if snippet:
+            logging.warning(f"BGM候选搜索解析失败，返回内容: {snippet}")
         return []
     except Exception:
         return []
@@ -230,8 +259,14 @@ def fetch_tmdb_by_id_raw(tmdb_id, is_tv=True, api_key=""):
             msg = format_error_message(ERROR_CODE_INVALID, "ID无效")
         else:
             msg = format_error_message(ERROR_CODE_HTTP, f"HTTP请求失败: {err}")
+        snippet = _response_body_snippet(getattr(err, "response", None))
+        if snippet:
+            logging.warning(f"TMDb按ID查询HTTP失败，返回内容: {snippet}")
         return str(tmdb_id), "None", msg, {}
     except ValueError:
+        snippet = _response_body_snippet(locals().get("response"))
+        if snippet:
+            logging.warning(f"TMDb按ID查询解析失败，返回内容: {snippet}")
         return (
             str(tmdb_id),
             "None",
@@ -367,6 +402,16 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
         return []
     except requests.exceptions.Timeout:
         return []
+    except requests.exceptions.HTTPError as err:
+        snippet = _response_body_snippet(getattr(err, "response", None))
+        if snippet:
+            logging.warning(f"TMDb搜索HTTP失败，返回内容: {snippet}")
+        return []
+    except ValueError:
+        snippet = _response_body_snippet(locals().get("response"))
+        if snippet:
+            logging.warning(f"TMDb搜索解析失败，返回内容: {snippet}")
+        return []
     except Exception as err:
         logging.error(f"TMDb搜索失败: {err}")
         return []
@@ -469,7 +514,15 @@ def fetch_tmdb_episode_meta_raw(
 
         return name or "", plot or "", still or ""
     except Exception as err:
-        logging.warning(f"TMDb剧集详情获取失败: {err}")
+        snippet = ""
+        if isinstance(err, requests.exceptions.HTTPError):
+            snippet = _response_body_snippet(getattr(err, "response", None))
+        else:
+            snippet = _response_body_snippet(locals().get("response"))
+        if snippet:
+            logging.warning(f"TMDb剧集详情获取失败: {err}，返回内容: {snippet}")
+        else:
+            logging.warning(f"TMDb剧集详情获取失败: {err}")
         return "", "", ""
 
 
@@ -573,6 +626,14 @@ def fetch_hybrid_episode_meta(
                 if s_p_res.status_code == 200:
                     s_p = s_p_res.json().get("poster_path", "")
         except Exception as err:
-            logging.warning(f"混合来源补全剧集图片失败: {err}")
+            snippet = ""
+            if isinstance(err, requests.exceptions.HTTPError):
+                snippet = _response_body_snippet(getattr(err, "response", None))
+            else:
+                snippet = _response_body_snippet(locals().get("response"))
+            if snippet:
+                logging.warning(f"混合来源补全剧集图片失败: {err}，返回内容: {snippet}")
+            else:
+                logging.warning(f"混合来源补全剧集图片失败: {err}")
 
     return ep_n, ep_p, ep_s, s_p

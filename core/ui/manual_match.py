@@ -26,6 +26,19 @@ from utils.helpers import (
 )
 
 
+def _response_body_snippet(response, limit=300):
+    if response is None:
+        return ""
+    try:
+        body = response.text or ""
+    except Exception:
+        return ""
+    compact = " ".join(str(body).split())
+    if len(compact) > limit:
+        return compact[:limit] + "..."
+    return compact
+
+
 def request_manual_candidate_choice(gui, item, query_title, source_name, candidates):
     """Schedule manual picker on main thread and wait from worker thread."""
     result_holder = {"selected": None}
@@ -58,7 +71,9 @@ def show_candidate_picker_dialog(
 
     select_win = Toplevel(gui.root)
     select_win.title(f"手动确认 {source_name} 匹配")
+    select_win.transient(gui.root)
     center_window(select_win, gui.root, 900, 420)
+    select_win.after_idle(lambda: center_window(select_win, gui.root, 900, 420))
     select_win.attributes("-topmost", True)
 
     label_text = f"""文件: {item.get("old_name", "")}
@@ -127,7 +142,6 @@ def show_candidate_picker_dialog(
     )
 
     select_win.protocol("WM_DELETE_WINDOW", on_skip)
-    select_win.transient(gui.root)
     select_win.grab_set()
     try:
         select_win.wait_window()
@@ -265,10 +279,16 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                 except requests.exceptions.Timeout:
                     append_error("BGM", format_error_message(ERROR_CODE_TIMEOUT, "请求超时"))
                 except requests.exceptions.HTTPError as err:
+                    snippet = _response_body_snippet(getattr(err, "response", None))
+                    if snippet:
+                        logging.warning(f"BGM手动搜索HTTP失败，返回内容: {snippet}")
                     append_error(
                         "BGM", format_error_message(ERROR_CODE_HTTP, f"HTTP请求失败: {err}")
                     )
                 except ValueError as err:
+                    snippet = _response_body_snippet(locals().get("res"))
+                    if snippet:
+                        logging.warning(f"BGM手动搜索解析失败，返回内容: {snippet}")
                     append_error(
                         "BGM", format_error_message(ERROR_CODE_PARSE, f"响应解析失败: {err}")
                     )
@@ -323,10 +343,16 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                 except requests.exceptions.Timeout:
                     append_error("TMDb", format_error_message(ERROR_CODE_TIMEOUT, "请求超时"))
                 except requests.exceptions.HTTPError as err:
+                    snippet = _response_body_snippet(getattr(err, "response", None))
+                    if snippet:
+                        logging.warning(f"TMDb手动搜索HTTP失败，返回内容: {snippet}")
                     append_error(
                         "TMDb", format_error_message(ERROR_CODE_HTTP, f"HTTP请求失败: {err}")
                     )
                 except ValueError as err:
+                    snippet = _response_body_snippet(locals().get("res_tv") or locals().get("res_movie"))
+                    if snippet:
+                        logging.warning(f"TMDb手动搜索解析失败，返回内容: {snippet}")
                     append_error(
                         "TMDb", format_error_message(ERROR_CODE_PARSE, f"响应解析失败: {err}")
                     )
@@ -347,9 +373,9 @@ def show_manual_match_results(gui, selected_ids, results, error_msg=""):
 
     if not results:
         if error_msg:
-            messagebox.showerror("搜索失败", error_msg)
+            messagebox.showerror("搜索失败", error_msg, parent=gui.root)
         else:
-            messagebox.showinfo("无结果", "未找到匹配的条目")
+            messagebox.showinfo("无结果", "未找到匹配的条目", parent=gui.root)
         return
 
     if len(results) == 1:
@@ -360,7 +386,9 @@ def show_manual_match_results(gui, selected_ids, results, error_msg=""):
 
     select_win = Toplevel(gui.root)
     select_win.title("选择匹配项")
+    select_win.transient(gui.root)
     center_window(select_win, gui.root, 650, 350)
+    select_win.after_idle(lambda: center_window(select_win, gui.root, 650, 350))
 
     lb = Listbox(select_win, width=80, height=10)
     lb.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
@@ -389,7 +417,6 @@ def show_manual_match_results(gui, selected_ids, results, error_msg=""):
     lb.bind("<Double-Button-1>", on_select)
     ttk.Button(select_win, text="确认选择", command=on_select).pack(pady=5)
 
-    select_win.transient(gui.root)
     select_win.grab_set()
     gui.root.wait_window(select_win)
 

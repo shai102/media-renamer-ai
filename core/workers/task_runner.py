@@ -191,7 +191,10 @@ def run_preview_pool(gui):
     except Exception as err:
         logging.error(f"预览处理失败: {err}")
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"处理失败: {str(err)[:30]}")
-        gui.root.after(0, lambda msg=err_msg: messagebox.showerror("错误", msg))
+        gui.root.after(
+            0,
+            lambda msg=err_msg: messagebox.showerror("错误", msg, parent=gui.root),
+        )
 
     gui.root.after(
         0,
@@ -476,7 +479,10 @@ def run_execution(gui, is_archive):
     except Exception as err:
         logging.error(f"执行线程池失败: {err}")
         err_msg = f"执行失败: {err}"
-        gui.root.after(0, lambda msg=err_msg: messagebox.showerror("错误", msg))
+        gui.root.after(
+            0,
+            lambda msg=err_msg: messagebox.showerror("错误", msg, parent=gui.root),
+        )
 
     gui.root.after(0, lambda: gui.status.config(text="任务全部完成"))
 

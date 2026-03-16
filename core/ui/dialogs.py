@@ -11,6 +11,7 @@ class SeasonOffsetDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("高级季集映射")
         center_window(self, parent, 450, 260)
+        self.after_idle(lambda: center_window(self, parent, 450, 260))
         self.result = None
 
         ttk.Label(
@@ -46,4 +47,4 @@ class SeasonOffsetDialog(tk.Toplevel):
             self.result = (safe_int(self.s_var.get(), 1), safe_int(self.o_var.get(), 0))
             self.destroy()
         except ValueError:
-            messagebox.showerror("错误", "请输入有效的整数！")
+            messagebox.showerror("错误", "请输入有效的整数！", parent=self)

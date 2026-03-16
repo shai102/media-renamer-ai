@@ -98,22 +98,12 @@ from utils.helpers import (
     write_nfo,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("media_renamer.log", encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
-)
-
-
 class MediaRenamerGUI(ConfigMixin, ListMixin):
     """主GUI类"""
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v0.8")
+        self.root.title("媒体归档刮削助手 v0.9")
         self.root.geometry("1300x900")
 
         self.file_list = []
@@ -312,7 +302,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Button(
             p_frame,
             text="选择目录",
-            command=lambda: self.target_root.set(filedialog.askdirectory()),
+            command=lambda: self.target_root.set(filedialog.askdirectory(parent=self.root)),
         ).pack(side=tk.LEFT, padx=5)
 
         # 顶部工具栏
@@ -403,7 +393,11 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         """打开设置窗口"""
         win = tk.Toplevel(self.root)
         win.title("高级设置与 API 配置")
+        win.transient(self.root)
         center_window(win, self.root, 650, 650)
+        win.after_idle(lambda: center_window(win, self.root, 650, 650))
+        win.grab_set()
+        win.focus_set()
 
         f = ttk.Frame(win, padding=20)
         f.pack(fill=tk.BOTH, expand=True)
@@ -614,7 +608,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
         status_var.set(message)
         if show_message:
-            messagebox.showwarning("Ollama模型列表", message)
+            messagebox.showwarning("Ollama模型列表", message, parent=self.root)
 
     def _parse_with_ollama(self, filename):
         """调用本地 Ollama 模型解析文件名"""
@@ -855,7 +849,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
     def start_preview(self):
         """开始预览"""
         if not self.file_list:
-            messagebox.showwarning("警告", "请先添加文件")
+            messagebox.showwarning("警告", "请先添加文件", parent=self.root)
             return
 
         if self.prefer_ollama.get():
@@ -863,12 +857,13 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 messagebox.showwarning(
                     "Ollama配置不完整",
                     "您选择了优先使用本地Ollama，但未填写Ollama URL或模型。请先完成配置或切换回SiliconFlow。",
+                    parent=self.root,
                 )
                 return
         else:
             if not self.sf_api_key.get().strip():
                 messagebox.showwarning(
-                    "缺少API密钥", "请先配置SiliconFlow API Key或启用Ollama。"
+                    "缺少API密钥", "请先配置SiliconFlow API Key或启用Ollama。", parent=self.root
                 )
                 return
 
@@ -895,7 +890,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         for item in self.file_list:
             if "metadata" not in item or item["metadata"].get("id") == "None":
                 messagebox.showwarning(
-                    "缺少元数据", "请先执行【高速识别预览】后再进行重命名操作。"
+                    "缺少元数据",
+                    "请先执行【高速识别预览】后再进行重命名操作。",
+                    parent=self.root,
                 )
                 return
 

@@ -89,7 +89,7 @@ def parse_error_message(message):
         return ERROR_CODE_CONFIG, text
     if "HTTP" in text:
         return ERROR_CODE_HTTP, text
-    if "解析" in text or "JSON" in text:
+    if "解析失败" in text or "JSON" in text:
         return ERROR_CODE_PARSE, text
     if "无结果" in text or "未匹配" in text:
         return ERROR_CODE_NO_RESULT, text
@@ -183,8 +183,20 @@ def candidate_to_result(candidate, hit_msg):
 
 def center_window(window, parent, width, height):
     parent.update_idletasks()
-    x = parent.winfo_x() + (parent.winfo_width() // 2) - (width // 2)
-    y = parent.winfo_y() + (parent.winfo_height() // 2) - (height // 2)
+    window.update_idletasks()
+
+    parent_w = parent.winfo_width()
+    parent_h = parent.winfo_height()
+    if parent_w <= 1 or parent_h <= 1:
+        parent_w = parent.winfo_screenwidth()
+        parent_h = parent.winfo_screenheight()
+
+    # Use root coordinates for reliable placement on Windows with DPI scaling.
+    parent_x = parent.winfo_rootx()
+    parent_y = parent.winfo_rooty()
+
+    x = parent_x + (parent_w // 2) - (width // 2)
+    y = parent_y + (parent_h // 2) - (height // 2)
     x = max(0, x)
     y = max(0, y)
     window.geometry(f"{width}x{height}+{x}+{y}")

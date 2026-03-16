@@ -10,13 +10,13 @@ from utils.helpers import clear_api_cache_file
 class ListMixin:
     def add_files(self):
         """添加文件"""
-        files = filedialog.askopenfilenames()
+        files = filedialog.askopenfilenames(parent=self.root)
         for file_path in files:
             self._add(file_path)
 
     def add_folder(self):
         """添加文件夹"""
-        folder = filedialog.askdirectory()
+        folder = filedialog.askdirectory(parent=self.root)
         if folder:
             exts = self.get_media_exts()
             count = 0

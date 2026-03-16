@@ -129,7 +129,7 @@ def friendly_status_text(message):
                 "超时",
                 "未配置",
                 "HTTP",
-                "解析",
+                "解析失败",
                 "JSON",
                 "无结果",
                 "未匹配",
@@ -157,8 +157,9 @@ def friendly_status_text(message):
         ERROR_CODE_UNKNOWN: "处理失败，请查看日志",
     }.get(code, "处理失败，请查看日志")
 
-    if detail and code in {ERROR_CODE_HTTP, ERROR_CODE_UNKNOWN}:
-        return f"{template} ({detail[:24]})"
+    if detail and code in {ERROR_CODE_PARSE, ERROR_CODE_HTTP, ERROR_CODE_UNKNOWN}:
+        compact_detail = " ".join(str(detail).split())
+        return f"{template} (返回: {compact_detail[:60]})"
     return template
 
 

@@ -78,10 +78,14 @@ class ConfigMixin:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(config_data, f, indent=4, ensure_ascii=False)
             if show_message:
-                messagebox.showinfo("成功", "所有配置与规则已保存！立即生效。")
+                messagebox.showinfo(
+                    "成功",
+                    "所有配置与规则已保存！立即生效。",
+                    parent=self.root,
+                )
         except Exception as err:
             if show_message:
-                messagebox.showerror("错误", f"保存失败: {err}")
+                messagebox.showerror("错误", f"保存失败: {err}", parent=self.root)
 
     def on_close(self):
         """关闭窗口时静默保存配置（含窗口位置）"""

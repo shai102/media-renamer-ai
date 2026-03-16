@@ -104,7 +104,7 @@ def parse_with_ollama(base_url, model, filename):
             {"role": "user", "content": filename},
         ],
         "stream": False,
-        "options": {"temperature": 0, "top_p": 0.9, "num_predict": 200},
+        "options": {"temperature": 0.2, "top_p": 0.9, "num_predict": 200},
         "timeout": 90,
     }
 
@@ -273,7 +273,7 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
             {"role": "user", "content": prompt},
         ],
         "stream": False,
-        "options": {"temperature": 0.0},
+        "options": {"temperature": 0.2},
         "timeout": 120,
     }
 
