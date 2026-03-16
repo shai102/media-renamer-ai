@@ -70,6 +70,7 @@ class ConfigMixin:
             "preview_workers": preview_workers,
             "sync_workers": sync_workers,
             "execution_workers": execution_workers,
+            "media_type_override": self.media_type_override.get(),
             "window_geometry": self.root.winfo_geometry(),
         }
 

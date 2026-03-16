@@ -62,7 +62,7 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
             e_calc = max(1, int(raw_e) + forced_o)
 
         y = g.get("year") or m.get("year")
-        media_type = m.get("type", "episode")
+        media_type = gui._resolve_media_type({"type": m.get("type", "episode")})
         is_tv = media_type == "episode"
         mode = gui.source_var.get()
 
@@ -274,7 +274,7 @@ def process_task(gui, i):
             if sp_match:
                 e = int(sp_match.group(1))
 
-        media_type = g.get("type", "episode")
+        media_type = gui._resolve_media_type(g)
         is_tv = media_type == "episode"
         path_key = item["path"]
 

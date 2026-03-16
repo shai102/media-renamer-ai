@@ -177,6 +177,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.execution_workers = tk.StringVar(
             value=str(self._clamp_workers(self.config.get("execution_workers"), 3))
         )
+        self.media_type_override = tk.StringVar(
+            value=self.config.get("media_type_override", "自动判断")
+        )
         self.embedding_cache = {}
         self.ollama_embed_endpoint = None
 
@@ -333,6 +336,15 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             text="AI + BGM (推荐)",
             variable=self.source_var,
             value="siliconflow_bgm",
+        ).pack(side=tk.LEFT)
+
+        ttk.Label(top, text="类型:").pack(side=tk.LEFT, padx=(12, 4))
+        ttk.Combobox(
+            top,
+            textvariable=self.media_type_override,
+            values=("自动判断", "电影", "电视剧"),
+            state="readonly",
+            width=10,
         ).pack(side=tk.LEFT)
 
         ttk.Button(top, text="清空列表(含缓存)", command=self.clear_list).pack(
@@ -755,6 +767,19 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def _build_status_text(self, *messages):
         return build_status_text(*messages)
+
+    def _resolve_media_type(self, guess_data=None):
+        """Resolve media type from UI override or parser result."""
+        override = str(self.media_type_override.get() or "").strip()
+        if override == "电影":
+            return "movie"
+        if override == "电视剧":
+            return "episode"
+
+        guessed_type = str((guess_data or {}).get("type") or "episode").strip().lower()
+        if guessed_type in ("movie", "film"):
+            return "movie"
+        return "episode"
 
     def start_preview(self):
         """开始预览"""
