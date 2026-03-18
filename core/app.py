@@ -86,6 +86,7 @@ from utils.helpers import (
     clear_api_cache_file,
     derive_title_from_filename,
     extract_episode_number,
+    extract_year_from_release,
     format_candidate_label,
     format_error_message,
     normalize_compare_text,
@@ -814,6 +815,14 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
         if len(candidates) == 1:
             return candidate_to_result(candidates[0], f"{source_name}命中")
+
+        # 年份预排序：将年份匹配的候选提前，减少同名不同年作品的误匹配
+        if year:
+            year_str = str(year).strip()
+            candidates = sorted(
+                candidates,
+                key=lambda c: 0 if extract_year_from_release(c.get("release") or "") == year_str else 1,
+            )
 
         ranked_candidates, emb_pick, emb_msg = self._rerank_candidates_with_embedding(
             item, query_title, year, is_tv, source_name, candidates

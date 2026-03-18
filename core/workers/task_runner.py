@@ -307,11 +307,15 @@ def process_task(gui, i):
                                 "episode": e,
                             }
 
-        if re.search(r"(?i)(?:PROLOGUE|OVA|OAD|SP)", pure):
+        if re.search(r"(?i)(?:PROLOGUE|OVA|OAD|SP\b|SPECIAL|NC\.VER|EXTRA)", pure):
             s = 0
-            sp_match = re.search(r"(?i)(?:SP|OVA|OAD)\s*0*(\d+)", pure)
+            sp_match = re.search(
+                r"(?i)(?:SP|OVA|OAD|SPECIAL|EXTRA)\s*(?:BD)?\s*0*(\d+)", pure
+            )
             if sp_match:
                 e = int(sp_match.group(1))
+            elif re.search(r"(?i)PROLOGUE", pure):
+                e = 0
 
         media_type = gui._resolve_media_type(g)
         is_tv = media_type == "episode"

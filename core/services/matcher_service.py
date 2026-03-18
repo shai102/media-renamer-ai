@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 
 import requests
@@ -8,6 +9,7 @@ from utils.helpers import (
     ERROR_CODE_PARSE,
     ERROR_CODE_TIMEOUT,
     ERROR_CODE_UNKNOWN,
+    clean_search_title,
     extract_year_from_release,
     format_candidate_label,
     format_error_message,
@@ -104,6 +106,19 @@ def parse_with_ollama(base_url, model, filename, temperature=0.2, top_p=0.9):
 7. 如果无法确定 year，填 null。
 8. 如果文件名里没有明确作品名，title 设为空字符串，不要猜。
 
+示例：
+输入: [KTXP][Dungeon Meshi][01][CHS][1080P][AVC].mkv
+输出: {"title": "Dungeon Meshi", "year": null, "season": 1, "episode": 1}
+
+输入: 蜡笔小新.2024.S01E05.1080p.mkv
+输出: {"title": "蜡笔小新", "year": 2024, "season": 1, "episode": 5}
+
+输入: The.Mandalorian.S03E04.2023.WEB-DL.mkv
+输出: {"title": "The Mandalorian", "year": 2023, "season": 3, "episode": 4}
+
+输入: [UHA-WINGS][Violet Evergarden][06][CHT][1080p][MP4].mp4
+输出: {"title": "Violet Evergarden", "year": null, "season": 1, "episode": 6}
+
 返回格式：
 {
   "title": "",
@@ -172,8 +187,8 @@ def build_candidate_embedding_text(candidate):
     title = candidate.get("title") or ""
     alt = candidate.get("alt_title") or ""
     year = extract_year_from_release(candidate.get("release")) or ""
-    source = candidate.get("msg") or ""
-    return f"标题:{title}; 原名:{alt}; 年份:{year}; 来源:{source}"
+    overview = (candidate.get("meta") or {}).get("overview") or ""
+    return f"标题:{title}; 原名:{alt}; 年份:{year}; 简介:{overview[:120]}"
 
 
 def get_embedding(base_url, embedding_model, text, cache, cache_lock, preferred_endpoint=None):
@@ -226,12 +241,13 @@ def rerank_candidates_with_embedding(item, query_title, year, is_tv, source_name
     if not candidates:
         return candidates, None, ""
 
+    # 用去噪后的文件名（而非原始噪声版本）丰富查询语义
+    clean_fn = clean_search_title(os.path.splitext(item.get("old_name", ""))[0])
     query_text = (
-        f"文件名:{item.get('old_name', '')}; "
-        f"解析标题:{query_title}; "
+        f"标题:{query_title}; "
+        f"文件:{clean_fn}; "
         f"年份:{safe_str(year)}; "
-        f"类型:{'剧集' if is_tv else '电影'}; "
-        f"来源:{source_name}"
+        f"类型:{'剧集' if is_tv else '电影'}"
     )
     q_emb = get_embedding_func(query_text)
     if not q_emb:
@@ -282,10 +298,11 @@ def pick_candidate_with_ollama(
             f"{idx}. 标题={candidate.get('title', '')}; 原名={candidate.get('alt_title', '')}; 年份={extract_year_from_release(candidate.get('release')) or '-'}; ID={candidate.get('id')}; 评分={candidate.get('rating', 0)}"
         )
 
+    clean_name = os.path.splitext(item.get("old_name", ""))[0]
     prompt = f"""你是媒体数据库匹配助手。请根据文件名、解析出的标题和年份，从候选中选出最可能匹配的一项。
 如果无法确定，必须返回 pick 为 0。只允许输出 JSON，不要输出额外说明。
 JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
-文件名: {item.get("old_name", "")}
+文件名: {clean_name}
 解析标题: {query_title}
 年份: {safe_str(year)}
 类型: {"剧集" if is_tv else "电影"}

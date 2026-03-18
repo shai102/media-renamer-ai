@@ -1,3 +1,4 @@
+import difflib
 import os
 import re
 
@@ -103,8 +104,9 @@ def can_reuse_dir_ai(cached_ai, pure_name, guess_data=None):
             continue
         if cand_key == cached_key:
             return True
-        if len(cand_key) >= 6 and len(cached_key) >= 6:
-            if cand_key in cached_key or cached_key in cand_key:
+        if len(cand_key) >= 4 and len(cached_key) >= 4:
+            ratio = difflib.SequenceMatcher(None, cand_key, cached_key).ratio()
+            if ratio >= 0.85:
                 return True
 
     return False

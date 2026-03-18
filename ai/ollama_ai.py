@@ -99,6 +99,19 @@ def fetch_siliconflow_info(
 7. 如果无法确定 year，填 null。
 8. 如果文件名里没有明确作品名，title 设为空字符串，不要猜。
 
+示例：
+输入: [KTXP][Dungeon Meshi][01][CHS][1080P][AVC].mkv
+输出: {"title": "Dungeon Meshi", "year": null, "season": 1, "episode": 1}
+
+输入: 蜡笔小新.2024.S01E05.1080p.mkv
+输出: {"title": "蜡笔小新", "year": 2024, "season": 1, "episode": 5}
+
+输入: The.Mandalorian.S03E04.2023.WEB-DL.mkv
+输出: {"title": "The Mandalorian", "year": 2023, "season": 3, "episode": 4}
+
+输入: [UHA-WINGS][Violet Evergarden][06][CHT][1080p][MP4].mp4
+输出: {"title": "Violet Evergarden", "year": null, "season": 1, "episode": 6}
+
 返回格式：
 {
     "title": "",
