@@ -2,6 +2,8 @@ import io
 import logging
 import threading
 import tkinter as tk
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from tkinter import Listbox, Scrollbar, Toplevel, messagebox, simpledialog, ttk
@@ -30,6 +32,18 @@ from utils.helpers import (
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w92"
 _POSTER_W = 62
 _POSTER_H = 93
+_POSTER_REQUEST_TIMEOUT = 8
+_POSTER_POOL_WORKERS = 4
+_POSTER_CACHE_MAX_ITEMS = 120
+
+_poster_executor = ThreadPoolExecutor(
+    max_workers=_POSTER_POOL_WORKERS,
+    thread_name_prefix="poster",
+)
+_poster_lock = threading.Lock()
+_poster_photo_cache = OrderedDict()
+_poster_pil_cache = OrderedDict()
+_poster_pending = set()
 
 
 def _resolve_poster_url(poster_path):
@@ -44,24 +58,187 @@ def _resolve_poster_url(poster_path):
     return ""
 
 
+def _get_cached_poster_photo(url):
+    """线程安全读取海报缓存，命中时刷新 LRU 顺序。"""
+    if not url:
+        return None
+    with _poster_lock:
+        photo = _poster_photo_cache.get(url)
+        if photo is not None:
+            _poster_photo_cache.move_to_end(url)
+        return photo
+
+
+def _cache_poster_photo(url, photo):
+    """线程安全写入海报缓存并执行 LRU 淘汰。"""
+    if not url or photo is None:
+        return
+    with _poster_lock:
+        _poster_photo_cache[url] = photo
+        _poster_photo_cache.move_to_end(url)
+        while len(_poster_photo_cache) > _POSTER_CACHE_MAX_ITEMS:
+            _poster_photo_cache.popitem(last=False)
+
+
+def _get_cached_poster_pil(url):
+    """线程安全读取已缩放的 PIL 海报缓存，命中时刷新 LRU 顺序。"""
+    if not url:
+        return None
+    with _poster_lock:
+        img = _poster_pil_cache.get(url)
+        if img is not None:
+            _poster_pil_cache.move_to_end(url)
+        return img
+
+
+def _cache_poster_pil(url, img):
+    """线程安全写入已缩放的 PIL 海报缓存并执行 LRU 淘汰。"""
+    if not url or img is None:
+        return
+    with _poster_lock:
+        _poster_pil_cache[url] = img
+        _poster_pil_cache.move_to_end(url)
+        while len(_poster_pil_cache) > _POSTER_CACHE_MAX_ITEMS:
+            _poster_pil_cache.popitem(last=False)
+
+
+def _fetch_and_resize_poster(url):
+    """下载并缩放海报，返回 PIL.Image。"""
+    resp = session.get(url, timeout=_POSTER_REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+    return img.resize((_POSTER_W, _POSTER_H), Image.LANCZOS)
+
+
+def _set_label_from_cache(url, label, image_cache):
+    """优先从缓存设置海报：PhotoImage 缓存 > PIL 缓存。"""
+    cached_photo = _get_cached_poster_photo(url)
+    if cached_photo is not None:
+        try:
+            if label.winfo_exists():
+                image_cache.append(cached_photo)  # 防止 GC 回收
+                label.config(image=cached_photo, text="")
+                return True
+        except Exception:
+            return False
+
+    cached_img = _get_cached_poster_pil(url)
+    if cached_img is not None:
+        try:
+            if label.winfo_exists():
+                photo = ImageTk.PhotoImage(cached_img)
+                _cache_poster_photo(url, photo)
+                image_cache.append(photo)  # 防止 GC 回收
+                label.config(image=photo, text="")
+                return True
+        except Exception:
+            return False
+
+    return False
+
+
+def _prefetch_poster_urls(urls):
+    """在后台预加载候选海报，确保弹窗出现时图片已就绪。"""
+    unique_urls = []
+    seen = set()
+    for u in urls:
+        url = str(u or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        if _get_cached_poster_photo(url) is not None:
+            continue
+        if _get_cached_poster_pil(url) is not None:
+            continue
+        unique_urls.append(url)
+
+    if not unique_urls:
+        return
+
+    def _prefetch_one(url):
+        with _poster_lock:
+            if url in _poster_pending:
+                return
+            _poster_pending.add(url)
+
+        try:
+            img = _fetch_and_resize_poster(url)
+            _cache_poster_pil(url, img)
+        except Exception:
+            pass
+        finally:
+            with _poster_lock:
+                _poster_pending.discard(url)
+
+    futures = []
+    for url in unique_urls:
+        try:
+            futures.append(_poster_executor.submit(_prefetch_one, url))
+        except Exception:
+            pass
+
+    for fut in futures:
+        try:
+            fut.result(timeout=_POSTER_REQUEST_TIMEOUT + 2)
+        except Exception:
+            pass
+
+
 def _load_poster_async(url, label, image_cache):
-    """在后台线程下载海报图片，下载完成后在主线程更新 Label。"""
+    """在后台线程下载海报，主线程创建 PhotoImage 并更新 Label。"""
     if not url:
         return
+    try:
+        if not label.winfo_exists():
+            return
+    except Exception:
+        return
+
+    if _set_label_from_cache(url, label, image_cache):
+        return
+
+    with _poster_lock:
+        if url in _poster_pending:
+            return
+        _poster_pending.add(url)
+
+    def _clear_pending():
+        with _poster_lock:
+            _poster_pending.discard(url)
+
+    def _apply_on_main_thread(img):
+        try:
+            if not label.winfo_exists():
+                return
+            _cache_poster_pil(url, img)
+            photo = ImageTk.PhotoImage(img)
+            _cache_poster_photo(url, photo)
+            image_cache.append(photo)  # 防止 GC 回收
+            label.config(image=photo, text="")
+        except Exception:
+            pass
+        finally:
+            _clear_pending()
 
     def _worker():
         try:
-            resp = session.get(url, timeout=10)
-            resp.raise_for_status()
-            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-            img = img.resize((_POSTER_W, _POSTER_H), Image.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
-            image_cache.append(photo)  # 防止 GC 回收
-            label.after(0, lambda: label.config(image=photo, text=""))
+            img = _fetch_and_resize_poster(url)
         except Exception:
-            pass  # 网络失败、解码失败时保留占位灰块
+            _clear_pending()
+            return
 
-    threading.Thread(target=_worker, daemon=True).start()
+        try:
+            if label.winfo_exists():
+                label.after(0, lambda im=img: _apply_on_main_thread(im))
+            else:
+                _clear_pending()
+        except Exception:
+            _clear_pending()
+
+    try:
+        _poster_executor.submit(_worker)
+    except Exception:
+        _clear_pending()
 
 
 def _bind_scroll_recursive(widget, handler):
@@ -226,6 +403,16 @@ def request_manual_candidate_choice(
             done_event,
             recognized_title=recognized_title,
         )
+
+    poster_urls = []
+    for cand in candidates:
+        meta = (cand or {}).get("meta") or {}
+        poster_url = _resolve_poster_url(meta.get("poster") or "")
+        if poster_url:
+            poster_urls.append(poster_url)
+
+    gui.root.after(0, lambda: gui.tree.set(item["id"], "st", "海报加载中..."))
+    _prefetch_poster_urls(poster_urls)
 
     gui.root.after(0, lambda: gui.tree.set(item["id"], "st", "多候选，等待手动选择"))
     with gui.popup_lock:
@@ -532,6 +719,15 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
     except Exception as err:
         logging.error(f"手动匹配搜索失败: {err}")
         append_error("手动匹配", format_error_message(ERROR_CODE_UNKNOWN, str(err)))
+
+    poster_urls = []
+    for _, _, _, meta in results:
+        m = meta or {}
+        poster_url = _resolve_poster_url(m.get("poster") or "")
+        if poster_url:
+            poster_urls.append(poster_url)
+
+    _prefetch_poster_urls(poster_urls)
 
     error_msg = "；".join(dict.fromkeys(search_errors)) if search_errors else ""
     gui.root.after(0, gui._show_manual_match_results, selected_ids, results, error_msg)

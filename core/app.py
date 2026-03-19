@@ -105,7 +105,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v1.3")
+        self.root.title("媒体归档刮削助手 v1.4")
         self.root.geometry("1300x900")
 
         self.file_list = []
@@ -159,10 +159,10 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             value=self.config.get("ollama_url", "http://localhost:11434")
         )
         self.ollama_model = tk.StringVar(
-            value=self.config.get("ollama_model", "qwen2.5:14b-instruct-q6_K")
+            value=self.config.get("ollama_model", "")
         )
         self.embedding_model = tk.StringVar(
-            value=self.config.get("embedding_model", "nomic-embed-text")
+            value=self.config.get("embedding_model", "")
         )
         self.prefer_ollama = tk.BooleanVar(
             value=self.config.get("prefer_ollama", False)
@@ -171,13 +171,13 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             value=self.config.get("use_embedding_rank", True)
         )
         self.preview_workers = tk.StringVar(
-            value=str(self._clamp_workers(self.config.get("preview_workers"), 5))
+            value=str(self._clamp_workers(self.config.get("preview_workers"), 1))
         )
         self.sync_workers = tk.StringVar(
             value=str(self._clamp_workers(self.config.get("sync_workers"), 5))
         )
         self.execution_workers = tk.StringVar(
-            value=str(self._clamp_workers(self.config.get("execution_workers"), 3))
+            value=str(self._clamp_workers(self.config.get("execution_workers"), 5))
         )
         self.media_type_override = tk.StringVar(
             value=self.config.get("media_type_override", "自动判断")
@@ -451,23 +451,35 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
         # API 配置
         ttk.Label(f, text="TMDb API Key:").grid(row=row, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(f, textvariable=self.tmdb_api_key, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        tmdb_key_entry = ttk.Entry(f, textvariable=self.tmdb_api_key, width=45, show="*")
+        tmdb_key_entry.grid(row=row, column=1, pady=5, padx=10)
+        tmdb_key_btn = ttk.Button(f, text="显示", width=6)
+        tmdb_key_btn.config(
+            command=lambda e=tmdb_key_entry, b=tmdb_key_btn: self._toggle_entry_visibility(e, b)
         )
+        tmdb_key_btn.grid(row=row, column=2, sticky=tk.W, pady=5)
         row += 1
 
         ttk.Label(f, text="BGM API Key:").grid(row=row, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(f, textvariable=self.bgm_api_key, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        bgm_key_entry = ttk.Entry(f, textvariable=self.bgm_api_key, width=45, show="*")
+        bgm_key_entry.grid(row=row, column=1, pady=5, padx=10)
+        bgm_key_btn = ttk.Button(f, text="显示", width=6)
+        bgm_key_btn.config(
+            command=lambda e=bgm_key_entry, b=bgm_key_btn: self._toggle_entry_visibility(e, b)
         )
+        bgm_key_btn.grid(row=row, column=2, sticky=tk.W, pady=5)
         row += 1
 
         ttk.Label(f, text="Silicon AI Key (备选):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.sf_api_key, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        sf_key_entry = ttk.Entry(f, textvariable=self.sf_api_key, width=45, show="*")
+        sf_key_entry.grid(row=row, column=1, pady=5, padx=10)
+        sf_key_btn = ttk.Button(f, text="显示", width=6)
+        sf_key_btn.config(
+            command=lambda e=sf_key_entry, b=sf_key_btn: self._toggle_entry_visibility(e, b)
         )
+        sf_key_btn.grid(row=row, column=2, sticky=tk.W, pady=5)
         row += 1
 
         ttk.Label(f, text="API URL (OpenAI兼容):").grid(
@@ -655,6 +667,19 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         combobox["values"] = items
         if current_text:
             combobox.set(current_text)
+
+    def _toggle_entry_visibility(self, entry_widget, button_widget=None):
+        """在明文与掩码之间切换 Entry 显示状态。"""
+        current_show = str(entry_widget.cget("show") or "")
+        if current_show:
+            entry_widget.config(show="")
+            if button_widget is not None:
+                button_widget.config(text="隐藏")
+            return
+
+        entry_widget.config(show="*")
+        if button_widget is not None:
+            button_widget.config(text="显示")
 
     def _refresh_ollama_model_options(
         self, ollama_combobox, embedding_combobox, status_var, show_message=False

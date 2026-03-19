@@ -44,9 +44,9 @@ class ConfigMixin:
 
     def save_config(self, show_message=True):
         """保存配置"""
-        preview_workers = self._clamp_workers(self.preview_workers.get(), 5)
+        preview_workers = self._clamp_workers(self.preview_workers.get(), 1)
         sync_workers = self._clamp_workers(self.sync_workers.get(), 5)
-        execution_workers = self._clamp_workers(self.execution_workers.get(), 3)
+        execution_workers = self._clamp_workers(self.execution_workers.get(), 5)
 
         self.preview_workers.set(str(preview_workers))
         self.sync_workers.set(str(sync_workers))
@@ -128,10 +128,10 @@ class ConfigMixin:
         return self._clamp_top_p(self.ai_top_p.get(), 0.9)
 
     def _get_preview_workers(self):
-        return self._clamp_workers(self.preview_workers.get(), 5)
+        return self._clamp_workers(self.preview_workers.get(), 1)
 
     def _get_sync_workers(self):
         return self._clamp_workers(self.sync_workers.get(), 5)
 
     def _get_execution_workers(self):
-        return self._clamp_workers(self.execution_workers.get(), 3)
+        return self._clamp_workers(self.execution_workers.get(), 5)
