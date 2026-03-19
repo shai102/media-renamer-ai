@@ -11,6 +11,7 @@
 - 元数据刮削：自动生成 `nfo`，下载 `poster/fanart/still`。
 - 规则可配置：文件命名模板、扩展名、语言标签可在 GUI 设置。
 - API 连接测试：设置页面可测试 AI API 连通性。
+- **海报卡片式选择**：手动匹配和多候选弹窗以卡片布局展示搜索结果，自动异步加载 TMDb/BGM 海报缩略图，支持蓝色高亮选中与全区域鼠标滚轮滚动。
 
 ## Project Structure
 
@@ -62,6 +63,7 @@ tests/
 	- `requests`
 	- `guessit`
 	- `urllib3`
+	- `Pillow`（海报图片加载所需，v10.0+）
 
 安装示例：
 
@@ -102,6 +104,6 @@ python main.py
 - 首次使用建议先做 `高速识别预览`，确认标题与集数后再执行重命名或归档。
 - 打包为EXE的流程
 - 如果你还没装 PyInstaller，先执行：pip install pyinstaller
-- 然后执行：pyinstaller --noconfirm --onefile --windowed --name "媒体归档刮削助手" --collect-all guessit --collect-all babelfish --clean main.py
+- 然后执行：pyinstaller --noconfirm --onefile --windowed --name "媒体归档刮削助手" --collect-all guessit --collect-all babelfish --collect-all Pillow --clean main.py
 - 打包后的文件在：dist/媒体归档刮削助手.exe
 

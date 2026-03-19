@@ -1,9 +1,11 @@
+import io
 import logging
 import threading
 import tkinter as tk
 
 import requests
 from tkinter import Listbox, Scrollbar, Toplevel, messagebox, simpledialog, ttk
+from PIL import Image, ImageTk
 
 from db.tmdb_api import (
     fetch_bgm_by_id,
@@ -24,6 +26,168 @@ from utils.helpers import (
     parse_error_message,
     session,
 )
+
+TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w92"
+_POSTER_W = 62
+_POSTER_H = 93
+
+
+def _resolve_poster_url(poster_path):
+    """将 poster_path 字段转为可下载的完整 URL。"""
+    if not poster_path:
+        return ""
+    p = str(poster_path).strip()
+    if p.startswith("http://") or p.startswith("https://"):
+        return p
+    if p.startswith("/"):
+        return TMDB_IMAGE_BASE + p
+    return ""
+
+
+def _load_poster_async(url, label, image_cache):
+    """在后台线程下载海报图片，下载完成后在主线程更新 Label。"""
+    if not url:
+        return
+
+    def _worker():
+        try:
+            resp = session.get(url, timeout=10)
+            resp.raise_for_status()
+            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+            img = img.resize((_POSTER_W, _POSTER_H), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            image_cache.append(photo)  # 防止 GC 回收
+            label.after(0, lambda: label.config(image=photo, text=""))
+        except Exception:
+            pass  # 网络失败、解码失败时保留占位灰块
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _bind_scroll_recursive(widget, handler):
+    """递归将 MouseWheel 事件绑定到 widget 及其所有子控件。"""
+    widget.bind("<MouseWheel>", handler)
+    for child in widget.winfo_children():
+        _bind_scroll_recursive(child, handler)
+
+
+def _build_scrollable_cards(parent, items, on_select_cb):
+    """
+    构建可滚动的卡片列表。
+
+    items: list of dict，每项需包含：
+        title, release, id, msg, meta (含 overview、poster)
+    on_select_cb(idx): 用户点击某卡片"选择"按钮时的回调
+    """
+    image_cache = []
+    accent_bars = []   # 每张卡片的左侧蓝色选中标记条
+
+    # 用 Pillow 生成固定像素尺寸的灰色占位图，避免 tk.Label 字符单位问题
+    _placeholder = ImageTk.PhotoImage(
+        Image.new("RGB", (_POSTER_W, _POSTER_H), "#cccccc")
+    )
+    image_cache.append(_placeholder)
+
+    outer = ttk.Frame(parent)
+    outer.pack(fill=tk.BOTH, expand=True)
+
+    canvas = tk.Canvas(outer, highlightthickness=0)
+    vbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+    canvas.configure(yscrollcommand=vbar.set)
+
+    vbar.pack(side=tk.RIGHT, fill=tk.Y)
+    canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    inner = ttk.Frame(canvas)
+    canvas_win = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_win, width=e.width))
+
+    def _scroll(event):
+        canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _highlight(idx):
+        for i, bar in enumerate(accent_bars):
+            bar.configure(bg="#2563eb" if i == idx else "#d0d0d0")
+        on_select_cb(idx)
+
+    for idx, item in enumerate(items):
+        title = item.get("title") or "未知"
+        release = item.get("release") or ""
+        year = release[:4] if release and len(release) >= 4 else "-"
+        tmdb_id = item.get("id") or "-"
+        source = item.get("msg") or ""
+        meta = item.get("meta") or {}
+        overview = (meta.get("overview") or "").strip()
+        overview = " ".join(overview.split())
+        if len(overview) > 100:
+            overview = overview[:100] + "..."
+        poster_url = _resolve_poster_url(meta.get("poster") or "")
+
+        card = ttk.Frame(inner, relief="groove", borderwidth=1, padding=4)
+        card.pack(fill=tk.X, padx=6, pady=3)
+
+        # 左侧选中高亮竖条（未选中=灰色，选中=蓝色）
+        accent = tk.Frame(card, width=5, bg="#d0d0d0")
+        accent.grid(row=0, column=0, rowspan=3, sticky="ns", padx=(0, 6))
+        accent_bars.append(accent)
+
+        # 海报图（直接用 image 模式，像素级精确尺寸）
+        poster_lbl = tk.Label(card, image=_placeholder, borderwidth=0, cursor="hand2")
+        poster_lbl.grid(row=0, column=1, rowspan=3, padx=(0, 8), pady=2, sticky="ns")
+        if poster_url:
+            _load_poster_async(poster_url, poster_lbl, image_cache)
+
+        # 中部文字区
+        id_tag = f"TMDB ID: {tmdb_id}" if "BGM" not in source else f"BGM ID: {tmdb_id}"
+        header_frame = ttk.Frame(card)
+        header_frame.grid(row=0, column=2, sticky="w")
+        ttk.Label(
+            header_frame, text=title, font=("", 10, "bold"), anchor="w"
+        ).pack(side=tk.LEFT)
+        ttk.Label(
+            header_frame, text=f"  {year}", foreground="#888888", font=("", 9)
+        ).pack(side=tk.LEFT)
+        ttk.Label(
+            header_frame,
+            text=f"  {id_tag}",
+            foreground="#e08020",
+            font=("", 9),
+        ).pack(side=tk.LEFT)
+
+        ttk.Label(
+            card, text=overview, wraplength=420, justify=tk.LEFT,
+            foreground="#555555", font=("", 9),
+        ).grid(row=1, column=2, sticky="w", pady=(0, 2))
+
+        # 右侧选择按钮
+        def _make_cb(i):
+            def _cb():
+                _highlight(i)
+            return _cb
+
+        btn = ttk.Button(card, text="选择", command=_make_cb(idx), width=6)
+        btn.grid(row=0, column=3, rowspan=2, padx=(8, 2), sticky="e")
+
+        card.columnconfigure(2, weight=1)
+
+        # 点击卡片任意位置也触发高亮
+        def _make_click_cb(i):
+            def _cb(event=None):
+                _highlight(i)
+            return _cb
+
+        for w in (card, poster_lbl, accent):
+            w.bind("<Button-1>", _make_click_cb(idx))
+
+    # 所有卡片构建完毕后，递归绑定滚轮到全部子控件
+    _bind_scroll_recursive(outer, _scroll)
+
+    # 将 image_cache 挂到 outer widget 上，防止 PhotoImage 被 Python GC 提前回收
+    outer._image_cache = image_cache
+
+    return outer
 
 
 def _response_body_snippet(response, limit=300):
@@ -72,52 +236,35 @@ def show_candidate_picker_dialog(
     select_win = Toplevel(gui.root)
     select_win.title(f"手动确认 {source_name} 匹配")
     select_win.transient(gui.root)
-    center_window(select_win, gui.root, 900, 420)
-    select_win.after_idle(lambda: center_window(select_win, gui.root, 900, 420))
+    center_window(select_win, gui.root, 760, 520)
+    select_win.after_idle(lambda: center_window(select_win, gui.root, 760, 520))
     select_win.attributes("-topmost", True)
 
-    label_text = f"""文件: {item.get("old_name", "")}
-识别标题: {query_title}
-请在下方候选中选择正确条目："""
+    label_text = (
+        f"文件: {item.get('old_name', '')}\n"
+        f"识别标题: {query_title}\n"
+        "请在下方候选中选择正确条目："
+    )
     ttk.Label(select_win, text=label_text, justify=tk.LEFT).pack(
-        anchor="w", padx=10, pady=(10, 6)
+        anchor="w", padx=10, pady=(10, 4)
     )
 
-    list_frame = ttk.Frame(select_win)
-    list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+    card_area = ttk.Frame(select_win)
+    card_area.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
-    lb = Listbox(list_frame, width=120, height=12)
-    lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    selected_holder = {"idx": -1}
 
-    scroll = Scrollbar(list_frame, orient=tk.VERTICAL, command=lb.yview)
-    scroll.pack(side=tk.RIGHT, fill=tk.Y)
-    lb.config(yscrollcommand=scroll.set)
+    def on_card_select(idx):
+        selected_holder["idx"] = idx
 
-    detail_var = tk.StringVar(value="")
-    ttk.Label(
-        select_win, textvariable=detail_var, justify=tk.LEFT, foreground="gray"
-    ).pack(anchor="w", padx=10, pady=(0, 4))
+    _build_scrollable_cards(card_area, candidates, on_card_select)
 
-    for candidate in candidates:
-        lb.insert(tk.END, format_candidate_label(candidate))
-
-    def update_detail(event=None):
-        sel = lb.curselection()
-        if not sel:
+    def on_confirm():
+        idx = selected_holder["idx"]
+        if idx < 0 or idx >= len(candidates):
+            messagebox.showinfo("提示", '请先点击某条目的"选择"按钮', parent=select_win)
             return
-        cand = candidates[sel[0]]
-        overview = (cand.get("meta") or {}).get("overview") or "无简介"
-        overview = " ".join(str(overview).split())
-        if len(overview) > 140:
-            overview = overview[:140] + "..."
-        detail_var.set(f"简介: {overview}")
-
-    def on_confirm(event=None):
-        sel = lb.curselection()
-        if not sel:
-            messagebox.showinfo("提示", "请先选择一项", parent=select_win)
-            return
-        result_holder["selected"] = candidates[sel[0]]
+        result_holder["selected"] = candidates[idx]
         if not done_event.is_set():
             done_event.set()
         select_win.destroy()
@@ -127,12 +274,6 @@ def show_candidate_picker_dialog(
         if not done_event.is_set():
             done_event.set()
         select_win.destroy()
-
-    lb.bind("<<ListboxSelect>>", update_detail)
-    lb.bind("<Double-Button-1>", on_confirm)
-    if candidates:
-        lb.selection_set(0)
-        update_detail()
 
     btn_frame = ttk.Frame(select_win)
     btn_frame.pack(fill=tk.X, padx=10, pady=8)
@@ -384,38 +525,55 @@ def show_manual_match_results(gui, selected_ids, results, error_msg=""):
         )
         return
 
+    # 将 (title, tid, msg, meta) tuple 列表转成 dict 供卡片组件使用
+    items = []
+    for title, tid, msg, meta in results:
+        release = (meta or {}).get("release", "")
+        items.append(
+            {
+                "title": title,
+                "id": tid,
+                "msg": msg,
+                "release": release,
+                "meta": meta or {},
+            }
+        )
+
     select_win = Toplevel(gui.root)
     select_win.title("选择匹配项")
     select_win.transient(gui.root)
-    center_window(select_win, gui.root, 650, 350)
-    select_win.after_idle(lambda: center_window(select_win, gui.root, 650, 350))
+    center_window(select_win, gui.root, 720, 480)
+    select_win.after_idle(lambda: center_window(select_win, gui.root, 720, 480))
 
-    lb = Listbox(select_win, width=80, height=10)
-    lb.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+    selected_holder = {"idx": -1}
 
-    scroll = Scrollbar(select_win)
-    scroll.pack(side=tk.RIGHT, fill=tk.Y)
-    lb.config(yscrollcommand=scroll.set)
-    scroll.config(command=lb.yview)
+    def on_card_select(idx):
+        selected_holder["idx"] = idx
 
-    for title, tid, msg, _meta in results:
-        lb.insert(tk.END, f"{title} (ID:{tid}) - {msg}")
+    card_area = ttk.Frame(select_win)
+    card_area.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+    _build_scrollable_cards(card_area, items, on_card_select)
 
-    def on_select(event=None):
-        sel = lb.curselection()
-        if sel:
-            idx_sel = sel[0]
-            gui._confirm_season_and_dispatch(
-                selected_ids,
-                results[idx_sel][0],
-                results[idx_sel][1],
-                results[idx_sel][2],
-                results[idx_sel][3],
-            )
-            select_win.destroy()
+    def on_confirm():
+        idx = selected_holder["idx"]
+        if idx < 0 or idx >= len(results):
+            messagebox.showinfo("提示", '请先点击某条目的"选择"按钮', parent=select_win)
+            return
+        gui._confirm_season_and_dispatch(
+            selected_ids,
+            results[idx][0],
+            results[idx][1],
+            results[idx][2],
+            results[idx][3],
+        )
+        select_win.destroy()
 
-    lb.bind("<Double-Button-1>", on_select)
-    ttk.Button(select_win, text="确认选择", command=on_select).pack(pady=5)
+    btn_frame = ttk.Frame(select_win)
+    btn_frame.pack(fill=tk.X, padx=10, pady=8)
+    ttk.Button(btn_frame, text="确认选择", command=on_confirm).pack(side=tk.LEFT)
+    ttk.Button(btn_frame, text="取消", command=select_win.destroy).pack(
+        side=tk.LEFT, padx=8
+    )
 
     select_win.grab_set()
     gui.root.wait_window(select_win)
