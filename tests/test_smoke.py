@@ -2,7 +2,12 @@ import unittest
 
 from ai.ollama_ai import _extract_siliconflow_content
 from core.services.matcher_service import extract_ollama_model_names
-from utils.helpers import format_error_message, parse_error_message, safe_filename
+from utils.helpers import (
+    build_query_titles,
+    format_error_message,
+    parse_error_message,
+    safe_filename,
+)
 
 
 class SmokeTests(unittest.TestCase):
@@ -53,6 +58,25 @@ class SmokeTests(unittest.TestCase):
 
     def test_error_message_parse_legacy_text(self):
         self.assertEqual(parse_error_message("未配置TMDb Key")[0], "CONFIG")
+
+    def test_build_query_titles_filters_generic_season_title(self):
+        item = {
+            "old_name": "Extracurricular.S01E01.2020.NF.WEB-DL.1080p.HEVC.DDP-Xiaomi.strm",
+            "dir": r"D:\Media\Season 1",
+        }
+        g = {"title": "Extracurricular"}
+        titles = build_query_titles(item, "Season 1", None, g)
+        self.assertIn("Extracurricular", titles)
+        self.assertNotIn("Season 1", titles)
+
+    def test_build_query_titles_keeps_real_title(self):
+        item = {
+            "old_name": "Extracurricular.S01E01.2020.NF.WEB-DL.1080p.HEVC.DDP-Xiaomi.strm",
+            "dir": r"D:\Media\Season 1",
+        }
+        g = {"title": "Extracurricular"}
+        titles = build_query_titles(item, "Extracurricular", None, g)
+        self.assertIn("Extracurricular", titles)
 
 
 if __name__ == "__main__":

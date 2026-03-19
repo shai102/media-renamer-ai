@@ -105,7 +105,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v1.2")
+        self.root.title("媒体归档刮削助手 v1.3")
         self.root.geometry("1300x900")
 
         self.file_list = []
@@ -791,11 +791,16 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
 
     def _request_manual_candidate_choice(
-        self, item, query_title, source_name, candidates
+        self, item, query_title, source_name, candidates, recognized_title=None
     ):
         """在主线程弹窗，让用户手动选择候选项"""
         return ui_request_manual_candidate_choice(
-            self, item, query_title, source_name, candidates
+            self,
+            item,
+            query_title,
+            source_name,
+            candidates,
+            recognized_title=recognized_title,
         )
 
     def _show_candidate_picker_dialog(
@@ -807,7 +812,14 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
 
     def _select_best_db_match(
-        self, item, query_title, year, is_tv, source_name, candidates
+        self,
+        item,
+        query_title,
+        year,
+        is_tv,
+        source_name,
+        candidates,
+        recognized_title=None,
     ):
         """从候选列表中自动或手动选择最终匹配项"""
         if not candidates:
@@ -845,7 +857,11 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             return candidate_to_result(chosen, hit_msg)
 
         manual_choice = self._request_manual_candidate_choice(
-            item, query_title, source_name, ranked_candidates
+            item,
+            query_title,
+            source_name,
+            ranked_candidates,
+            recognized_title=recognized_title,
         )
         if manual_choice:
             hit_msg = f"手动选择/{source_name}命中"
@@ -888,7 +904,13 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
         if merged:
             t_hit, tid_hit, msg_hit, meta_hit = self._select_best_db_match(
-                item, used_query, year, is_tv, source_name, merged
+                item,
+                used_query,
+                year,
+                is_tv,
+                source_name,
+                merged,
+                recognized_title=query_title,
             )
             if tid_hit != "None" and normalize_compare_text(
                 used_query

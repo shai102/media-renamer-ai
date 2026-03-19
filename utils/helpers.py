@@ -41,6 +41,10 @@ INVALID_QUERY_TITLES = {
 }
 INVALID_QUERY_TITLES_NORMALIZED = set(INVALID_QUERY_TITLES)
 
+GENERIC_SEASON_TITLE_RE = re.compile(
+    r"(?i)^(?:season\s*\d{1,2}|s\s*\d{1,2}|第\s*\d{1,2}\s*季)$"
+)
+
 VERSION_TAG_RE = re.compile(r"\[(NC\.Ver|SP|OVA|Extra|Special|OAD|Creditless)\]", re.I)
 EPISODE_NOISE_NUMBERS = {2160, 1080, 720, 480, 265, 264, 10}
 
@@ -225,6 +229,11 @@ def is_meaningful_query_title(title):
     text = str(title or "").strip()
     if not text:
         return False
+
+    # Reject generic season markers that are not actual series names.
+    if GENERIC_SEASON_TITLE_RE.match(text):
+        return False
+
     key = normalize_compare_text(text)
     if not key:
         return False

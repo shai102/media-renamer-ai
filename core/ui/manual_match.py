@@ -203,14 +203,28 @@ def _response_body_snippet(response, limit=300):
     return compact
 
 
-def request_manual_candidate_choice(gui, item, query_title, source_name, candidates):
+def request_manual_candidate_choice(
+    gui,
+    item,
+    query_title,
+    source_name,
+    candidates,
+    recognized_title=None,
+):
     """Schedule manual picker on main thread and wait from worker thread."""
     result_holder = {"selected": None}
     done_event = threading.Event()
 
     def _schedule_dialog():
         show_candidate_picker_dialog(
-            gui, item, query_title, source_name, candidates, result_holder, done_event
+            gui,
+            item,
+            query_title,
+            source_name,
+            candidates,
+            result_holder,
+            done_event,
+            recognized_title=recognized_title,
         )
 
     gui.root.after(0, lambda: gui.tree.set(item["id"], "st", "多候选，等待手动选择"))
@@ -227,7 +241,14 @@ def request_manual_candidate_choice(gui, item, query_title, source_name, candida
 
 
 def show_candidate_picker_dialog(
-    gui, item, query_title, source_name, candidates, result_holder, done_event
+    gui,
+    item,
+    query_title,
+    source_name,
+    candidates,
+    result_holder,
+    done_event,
+    recognized_title=None,
 ):
     """Show candidate picker dialog for ambiguous DB matches."""
     prev_status = gui.status.cget("text")
@@ -240,9 +261,17 @@ def show_candidate_picker_dialog(
     select_win.after_idle(lambda: center_window(select_win, gui.root, 760, 520))
     select_win.attributes("-topmost", True)
 
+    recognized_text = str(recognized_title or query_title or "").strip()
+    searched_text = str(query_title or "").strip()
+
+    if recognized_text and searched_text and recognized_text != searched_text:
+        title_block = f"识别标题: {recognized_text}\n检索标题: {searched_text}"
+    else:
+        title_block = f"识别标题: {recognized_text or searched_text}"
+
     label_text = (
         f"文件: {item.get('old_name', '')}\n"
-        f"识别标题: {query_title}\n"
+        f"{title_block}\n"
         "请在下方候选中选择正确条目："
     )
     ttk.Label(select_win, text=label_text, justify=tk.LEFT).pack(
