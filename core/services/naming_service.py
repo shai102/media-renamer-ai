@@ -47,6 +47,7 @@ def extract_explicit_season(pure_name):
     """Only parse explicit season markers to avoid treating years as seasons."""
     text = str(pure_name or "")
     patterns = [
+        r"(?i)\bS\s*0*(\d{1,2})\s*E\s*0*\d{1,4}\b",
         r"(?i)\bS\s*0*(\d{1,2})\b",
         r"(?i)\bSeason\s*0*(\d{1,2})\b",
         r"(?i)\b(\d{1,2})(?:st|nd|rd|th)\s*Season\b",
@@ -57,7 +58,7 @@ def extract_explicit_season(pure_name):
         if not match:
             continue
         season_num = safe_int(match.group(1), 0)
-        if 0 <= season_num <= 99:
+        if 1 <= season_num <= 99:
             return season_num
     return None
 
@@ -73,7 +74,7 @@ def pick_season(pure_name, guess_data=None, fallback=1):
         return guessed
 
     fallback_num = safe_int(fallback, 1)
-    if 0 <= fallback_num <= 99:
+    if 1 <= fallback_num <= 99:
         return fallback_num
     return 1
 

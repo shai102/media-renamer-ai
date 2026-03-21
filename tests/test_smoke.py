@@ -2,6 +2,8 @@ import unittest
 
 from ai.ollama_ai import _extract_siliconflow_content
 from core.services.matcher_service import extract_ollama_model_names
+from core.services.naming_service import extract_explicit_season, pick_season
+from core.workers.task_runner import SPECIAL_TAG_RE
 from utils.helpers import (
     build_query_titles,
     format_error_message,
@@ -77,6 +79,26 @@ class SmokeTests(unittest.TestCase):
         g = {"title": "Extracurricular"}
         titles = build_query_titles(item, "Extracurricular", None, g)
         self.assertIn("Extracurricular", titles)
+
+    def test_extract_explicit_season_from_sxxeyy(self):
+        name = "Extracurricular.S01E01.2020.NF.WEB-DL.1080p.HEVC.strm"
+        self.assertEqual(extract_explicit_season(name), 1)
+
+    def test_pick_season_ignores_zero_fallback(self):
+        season = pick_season("Extracurricular.E01.2020", {}, 0)
+        self.assertEqual(season, 1)
+
+    def test_pick_season_uses_explicit_over_zero_guess(self):
+        season = pick_season("Extracurricular.S01E01.2020", {"season": 0}, 0)
+        self.assertEqual(season, 1)
+
+    def test_special_tag_regex_does_not_match_extracurricular(self):
+        name = "Extracurricular.S01E01.2020.NF.WEB-DL.1080p.HEVC"
+        self.assertIsNone(SPECIAL_TAG_RE.search(name))
+
+    def test_special_tag_regex_matches_real_special_marker(self):
+        name = "Anime.Title.S01E01.[NC.Ver].1080p"
+        self.assertIsNotNone(SPECIAL_TAG_RE.search(name))
 
 
 if __name__ == "__main__":

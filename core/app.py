@@ -105,7 +105,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v1.4")
+        self.root.title("媒体归档刮削助手 v1.5")
         self.root.geometry("1300x900")
 
         self.file_list = []

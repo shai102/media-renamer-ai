@@ -26,6 +26,15 @@ from utils.helpers import (
 )
 
 
+SPECIAL_TAG_RE = re.compile(
+    r"(?i)(?<![A-Z0-9])(?:PROLOGUE|OVA|OAD|SP|SPECIAL|NC\.VER|EXTRA)(?![A-Z0-9])"
+)
+SPECIAL_EPISODE_RE = re.compile(
+    r"(?i)(?<![A-Z0-9])(?:SP|OVA|OAD|SPECIAL|EXTRA)(?![A-Z0-9])\s*(?:BD)?\s*0*(\d+)"
+)
+PROLOGUE_RE = re.compile(r"(?i)(?<![A-Z0-9])PROLOGUE(?![A-Z0-9])")
+
+
 def async_batch_runner(gui, indices, title, t_id, msg, meta):
     """Run background sync updates for selected files."""
     with ThreadPoolExecutor(max_workers=gui._get_sync_workers()) as executor:
@@ -287,7 +296,10 @@ def process_task(gui, i):
             if ai_data:
                 t = ai_data.get("title", "未知")
                 y = ai_data.get("year")
-                s = gui._pick_season(pure, g, ai_data.get("season", 1))
+                ai_season = safe_int(ai_data.get("season"), 1)
+                if ai_season < 1:
+                    ai_season = 1
+                s = gui._pick_season(pure, g, ai_season)
                 e = extracted_ep or safe_int(ai_data.get("episode"), 1)
                 with gui.cache_lock:
                     gui.dir_cache[dir_p] = ai_data
@@ -307,14 +319,12 @@ def process_task(gui, i):
                                 "episode": e,
                             }
 
-        if re.search(r"(?i)(?:PROLOGUE|OVA|OAD|SP\b|SPECIAL|NC\.VER|EXTRA)", pure):
+        if SPECIAL_TAG_RE.search(pure):
             s = 0
-            sp_match = re.search(
-                r"(?i)(?:SP|OVA|OAD|SPECIAL|EXTRA)\s*(?:BD)?\s*0*(\d+)", pure
-            )
+            sp_match = SPECIAL_EPISODE_RE.search(pure)
             if sp_match:
                 e = int(sp_match.group(1))
-            elif re.search(r"(?i)PROLOGUE", pure):
+            elif PROLOGUE_RE.search(pure):
                 e = 0
 
         media_type = gui._resolve_media_type(g)
