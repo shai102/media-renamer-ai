@@ -84,41 +84,85 @@ def fetch_siliconflow_info(
     base_url = (api_url or "https://api.siliconflow.cn/v1").strip().rstrip("/")
     url = f"{base_url}/chat/completions"
     prompt = r"""
-你是动漫/影视文件名解析助手。
+你是一个严格的动漫/影视文件名解析器。
 
 任务：
-从文件名中提取作品标题、年份、季数、集数。
+从输入的单个文件名中提取以下字段：
+- title
+- year
+- season
+- episode
 
-硬性规则：
-1. 只输出 JSON，不要解释，不要 markdown。
-2. title 必须是文件名里真实存在的作品名，不允许联想、不允许猜测其他作品。
-3. 遇到番组文件名时，优先保留原标题，如 Violet_Evergarden -> Violet Evergarden。
-4. 删除字幕组、分辨率、编码、语言标签、发布信息，如 KTXP、1080p、BDrip、GB、x264。
-5. season 默认 1。
-6. episode 必须是数字；像 [01] 这种优先识别为 episode。
-7. 如果无法确定 year，填 null。
-8. 如果文件名里没有明确作品名，title 设为空字符串，不要猜。
+输出要求：
+1. 只能输出一行 JSON。
+2. 不要输出解释、注释、markdown、代码块、前后缀文本。
+3. 输出字段必须且只能包含：
+{"title":"","year":null,"season":1,"episode":1}
+
+字段规则：
+1. title
+   - 必须来自文件名中真实存在的作品名。
+   - 不允许联想、补全、翻译、猜测、改写成其他作品名。
+   - 可以做最小清洗：
+     - 将下划线、点号替换为空格
+     - 去掉首尾空格
+     - 保留原标题主体
+   - 删除与作品名无关的信息，例如：
+     字幕组、分辨率、编码、音频、语言、来源、发布组、校验信息、文件扩展名。
+   - 如果无法明确确定作品名，返回空字符串 ""。
+
+2. year
+   - 仅当文件名中明确出现四位年份（如 2024、2023）时提取。
+   - 否则返回 null。
+
+3. season
+   - 默认值为 1。
+   - 若文件名中明确出现季信息，则提取对应数字。
+   - 常见模式包括但不限于：
+     S01、S1、Season 1、Season01、第2季、第二季、2nd Season
+   - 若无明确季信息，返回 1。
+
+4. episode
+   - 必须是数字，且始终返回整数。
+   - 优先识别明确集数信息。
+   - 常见模式包括但不限于：
+     E05、EP05、Episode 5、[05]、第05集、第5话、- 05
+   - 对番组文件名，像 [01] 这种纯数字分段，优先识别为 episode。
+   - 如果无法明确识别集数，则返回 1。
+
+清洗规则：
+1. 删除以下常见噪音信息：
+   - 字幕组/发布组：KTXP、UHA-WINGS 等方括号组名
+   - 分辨率：1080p、2160p、720p、4K
+   - 编码：x264、x265、HEVC、AVC
+   - 来源：WEB-DL、BDrip、BluRay、BD、DVD
+   - 语言：CHS、CHT、GB、BIG5、简繁、字幕相关标签
+   - 扩展名：mkv、mp4、avi
+2. 不要把这些噪音拼进 title。
+3. title 中的点号 "." 和下划线 "_" 可视为分隔符，必要时转为空格。
+
+判定优先级：
+1. 先识别 episode
+2. 再识别 season
+3. 再识别 year
+4. 最后确定 title
+5. title 只能取剩余文本中能明确视为作品名的部分
 
 示例：
 输入: [KTXP][Dungeon Meshi][01][CHS][1080P][AVC].mkv
-输出: {"title": "Dungeon Meshi", "year": null, "season": 1, "episode": 1}
+输出: {"title":"Dungeon Meshi","year":null,"season":1,"episode":1}
 
 输入: 蜡笔小新.2024.S01E05.1080p.mkv
-输出: {"title": "蜡笔小新", "year": 2024, "season": 1, "episode": 5}
+输出: {"title":"蜡笔小新","year":2024,"season":1,"episode":5}
 
 输入: The.Mandalorian.S03E04.2023.WEB-DL.mkv
-输出: {"title": "The Mandalorian", "year": 2023, "season": 3, "episode": 4}
+输出: {"title":"The Mandalorian","year":2023,"season":3,"episode":4}
 
 输入: [UHA-WINGS][Violet Evergarden][06][CHT][1080p][MP4].mp4
-输出: {"title": "Violet Evergarden", "year": null, "season": 1, "episode": 6}
+输出: {"title":"Violet Evergarden","year":null,"season":1,"episode":6}
 
-返回格式：
-{
-    "title": "",
-    "year": null,
-    "season": 1,
-    "episode": 1
-}
+输入: [SomeGroup][01][1080p].mkv
+输出: {"title":"","year":null,"season":1,"episode":1}
 """
 
     headers = {

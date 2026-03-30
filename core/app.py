@@ -60,9 +60,11 @@ from core.workers.task_runner import (
     async_batch_runner as worker_async_batch_runner,
     bg_update_single_ui as worker_bg_update_single_ui,
     process_one_file as worker_process_one_file,
+    process_one_file_scrape as worker_process_one_file_scrape,
     process_task as worker_process_task,
     run_execution as worker_run_execution,
     run_preview_pool as worker_run_preview_pool,
+    run_scrape_execution as worker_run_scrape_execution,
 )
 from utils.helpers import (
     CONFIG_FILE,
@@ -105,7 +107,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v1.5")
+        self.root.title("媒体归档刮削助手 v1.6")
         self.root.geometry("1300x900")
 
         self.file_list = []
@@ -394,10 +396,13 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.btn_pre.pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
-            bot, text="2. 原地重命名+刮削", command=lambda: self.start_run_logic(False)
+            bot, text="2. 原地重命名", command=lambda: self.start_run_logic(False)
         ).pack(side=tk.LEFT, padx=5)
         ttk.Button(
-            bot, text="3. 归档移动并刮削", command=lambda: self.start_run_logic(True)
+            bot, text="3. 归档移动", command=lambda: self.start_run_logic(True)
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            bot, text="4. 刮削", command=self.start_scrape_logic
         ).pack(side=tk.LEFT, padx=5)
 
         self.pbar = ttk.Progressbar(bot, mode="determinate")
@@ -1055,13 +1060,39 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             target=self.run_execution, args=(is_archive,), daemon=True
         ).start()
 
+    def start_scrape_logic(self):
+        """开始独立刮削"""
+        if not self.file_list:
+            return
+
+        for item in self.file_list:
+            if "metadata" not in item or item["metadata"].get("id") == "None":
+                messagebox.showwarning(
+                    "缺少元数据",
+                    "请先执行【高速识别预览】后再进行刮削操作。",
+                    parent=self.root,
+                )
+                return
+
+        threading.Thread(
+            target=self.run_scrape_execution, daemon=True
+        ).start()
+
     def run_execution(self, is_archive):
         """执行重命名"""
         return worker_run_execution(self, is_archive)
 
+    def run_scrape_execution(self):
+        """执行独立刮削"""
+        return worker_run_scrape_execution(self)
+
     def process_one_file(self, item, is_archive):
         """处理单个文件"""
         return worker_process_one_file(self, item, is_archive)
+
+    def process_one_file_scrape(self, item):
+        """单独刮削单个文件"""
+        return worker_process_one_file_scrape(self, item)
 
 
 if __name__ == "__main__":
