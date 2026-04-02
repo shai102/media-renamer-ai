@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 import re
 import threading
@@ -107,7 +107,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v1.6")
+        self.root.title("媒体归档刮削助手 v1.7")
         self.root.geometry("1300x900")
 
         self.file_list = []
@@ -120,6 +120,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.cache_lock = threading.Lock()
         self.file_write_lock = threading.Lock()
         self.popup_lock = threading.Lock()
+        self.preview_skip_all_event = threading.Event()
 
         self.config = self.load_config()
         self.target_root = tk.StringVar(value="")
@@ -385,6 +386,8 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<Button-3>", self.show_context_menu)
+        self.tree.bind("<Control-a>", self.select_all_files)
+        self.tree.bind("<Control-A>", self.select_all_files)
 
         # 底部按钮和进度条
         bot = ttk.Frame(self.root, padding=10)
@@ -1030,6 +1033,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.btn_pre.config(state=tk.DISABLED)
         self.pbar["value"] = 0
         self.status.config(text="识别中...")
+        self.preview_skip_all_event.clear()
 
         threading.Thread(target=self.run_preview_pool, daemon=True).start()
 
@@ -1099,3 +1103,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = MediaRenamerGUI(root)
     root.mainloop()
+

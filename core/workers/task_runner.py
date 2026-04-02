@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 import re
 import tkinter as tk
@@ -224,13 +224,14 @@ def run_preview_pool(gui):
             lambda msg=err_msg: messagebox.showerror("错误", msg, parent=gui.root),
         )
 
-    gui.root.after(
-        0,
-        lambda: [
-            gui.btn_pre.config(state=tk.NORMAL),
-            gui.status.config(text="预览完成"),
-        ],
-    )
+    def _finish_preview_ui():
+        gui.btn_pre.config(state=tk.NORMAL)
+        if gui.preview_skip_all_event.is_set():
+            gui.status.config(text="已终止本轮剩余识别")
+        else:
+            gui.status.config(text="预览完成")
+
+    gui.root.after(0, _finish_preview_ui)
 
 
 def process_task(gui, i):
@@ -238,9 +239,22 @@ def process_task(gui, i):
     item = gui.file_list[i]
 
     try:
+        if gui.preview_skip_all_event.is_set():
+            gui.root.after(
+                0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "已跳过")
+            )
+            return
+
         gui.root.after(
             0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "识别中")
         )
+
+        if gui.preview_skip_all_event.is_set():
+            gui.root.after(
+                0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "已跳过")
+            )
+            return
+
         pure, ext = gui.extract_lang_and_ext(item["old_name"])
         dir_p = item["dir"]
         mode = gui.source_var.get()
@@ -691,3 +705,4 @@ def process_one_file_scrape(gui, item):
                 id_val, "st", gui._friendly_status_text(msg)
             ),
         )
+

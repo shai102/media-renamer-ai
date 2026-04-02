@@ -1,4 +1,4 @@
-import io
+﻿import io
 import logging
 import threading
 import tkinter as tk
@@ -47,7 +47,7 @@ _poster_pending = set()
 
 
 def _resolve_poster_url(poster_path):
-    """将 poster_path 字段转为可下载的完整 URL。"""
+    """灏?poster_path 瀛楁杞负鍙笅杞界殑瀹屾暣 URL銆"""
     if not poster_path:
         return ""
     p = str(poster_path).strip()
@@ -59,7 +59,7 @@ def _resolve_poster_url(poster_path):
 
 
 def _get_cached_poster_photo(url):
-    """线程安全读取海报缓存，命中时刷新 LRU 顺序。"""
+    """绾跨▼瀹夊叏璇诲彇娴锋姤缂撳瓨锛屽懡涓椂鍒锋柊 LRU 椤哄簭銆"""
     if not url:
         return None
     with _poster_lock:
@@ -70,7 +70,7 @@ def _get_cached_poster_photo(url):
 
 
 def _cache_poster_photo(url, photo):
-    """线程安全写入海报缓存并执行 LRU 淘汰。"""
+    """绾跨▼瀹夊叏鍐欏叆娴锋姤缂撳瓨骞舵墽琛?LRU 娣樻卑銆"""
     if not url or photo is None:
         return
     with _poster_lock:
@@ -81,7 +81,7 @@ def _cache_poster_photo(url, photo):
 
 
 def _get_cached_poster_pil(url):
-    """线程安全读取已缩放的 PIL 海报缓存，命中时刷新 LRU 顺序。"""
+    """绾跨▼瀹夊叏璇诲彇宸茬缉鏀剧殑 PIL 娴锋姤缂撳瓨锛屽懡涓椂鍒锋柊 LRU 椤哄簭銆"""
     if not url:
         return None
     with _poster_lock:
@@ -92,7 +92,7 @@ def _get_cached_poster_pil(url):
 
 
 def _cache_poster_pil(url, img):
-    """线程安全写入已缩放的 PIL 海报缓存并执行 LRU 淘汰。"""
+    """绾跨▼瀹夊叏鍐欏叆宸茬缉鏀剧殑 PIL 娴锋姤缂撳瓨骞舵墽琛?LRU 娣樻卑銆"""
     if not url or img is None:
         return
     with _poster_lock:
@@ -103,7 +103,7 @@ def _cache_poster_pil(url, img):
 
 
 def _fetch_and_resize_poster(url):
-    """下载并缩放海报，返回 PIL.Image。"""
+    """涓嬭浇骞剁缉鏀炬捣鎶ワ紝杩斿洖 PIL.Image銆"""
     resp = session.get(url, timeout=_POSTER_REQUEST_TIMEOUT)
     resp.raise_for_status()
     img = Image.open(io.BytesIO(resp.content)).convert("RGB")
@@ -111,12 +111,12 @@ def _fetch_and_resize_poster(url):
 
 
 def _set_label_from_cache(url, label, image_cache):
-    """优先从缓存设置海报：PhotoImage 缓存 > PIL 缓存。"""
+    """浼樺厛浠庣紦瀛樿缃捣鎶ワ細PhotoImage 缂撳瓨 > PIL 缂撳瓨銆"""
     cached_photo = _get_cached_poster_photo(url)
     if cached_photo is not None:
         try:
             if label.winfo_exists():
-                image_cache.append(cached_photo)  # 防止 GC 回收
+                image_cache.append(cached_photo)  # 闃叉 GC 鍥炴敹
                 label.config(image=cached_photo, text="")
                 return True
         except Exception:
@@ -128,7 +128,7 @@ def _set_label_from_cache(url, label, image_cache):
             if label.winfo_exists():
                 photo = ImageTk.PhotoImage(cached_img)
                 _cache_poster_photo(url, photo)
-                image_cache.append(photo)  # 防止 GC 回收
+                image_cache.append(photo)  # 闃叉 GC 鍥炴敹
                 label.config(image=photo, text="")
                 return True
         except Exception:
@@ -138,7 +138,7 @@ def _set_label_from_cache(url, label, image_cache):
 
 
 def _prefetch_poster_urls(urls):
-    """在后台预加载候选海报，确保弹窗出现时图片已就绪。"""
+    """鍦ㄥ悗鍙伴鍔犺浇鍊欓€夋捣鎶ワ紝纭繚寮圭獥鍑虹幇鏃跺浘鐗囧凡灏辩华銆"""
     unique_urls = []
     seen = set()
     for u in urls:
@@ -185,7 +185,7 @@ def _prefetch_poster_urls(urls):
 
 
 def _load_poster_async(url, label, image_cache):
-    """在后台线程下载海报，主线程创建 PhotoImage 并更新 Label。"""
+    """鍦ㄥ悗鍙扮嚎绋嬩笅杞芥捣鎶ワ紝涓荤嚎绋嬪垱寤?PhotoImage 骞舵洿鏂?Label銆"""
     if not url:
         return
     try:
@@ -213,7 +213,7 @@ def _load_poster_async(url, label, image_cache):
             _cache_poster_pil(url, img)
             photo = ImageTk.PhotoImage(img)
             _cache_poster_photo(url, photo)
-            image_cache.append(photo)  # 防止 GC 回收
+            image_cache.append(photo)  # 闃叉 GC 鍥炴敹
             label.config(image=photo, text="")
         except Exception:
             pass
@@ -242,7 +242,7 @@ def _load_poster_async(url, label, image_cache):
 
 
 def _bind_scroll_recursive(widget, handler):
-    """递归将 MouseWheel 事件绑定到 widget 及其所有子控件。"""
+    """閫掑綊灏?MouseWheel 浜嬩欢缁戝畾鍒?widget 鍙婂叾鎵€鏈夊瓙鎺т欢銆"""
     widget.bind("<MouseWheel>", handler)
     for child in widget.winfo_children():
         _bind_scroll_recursive(child, handler)
@@ -250,16 +250,16 @@ def _bind_scroll_recursive(widget, handler):
 
 def _build_scrollable_cards(parent, items, on_select_cb):
     """
-    构建可滚动的卡片列表。
+    鏋勫缓鍙粴鍔ㄧ殑鍗＄墖鍒楄〃銆?
 
-    items: list of dict，每项需包含：
-        title, release, id, msg, meta (含 overview、poster)
-    on_select_cb(idx): 用户点击某卡片"选择"按钮时的回调
+    items: list of dict锛屾瘡椤归渶鍖呭惈锛?
+        title, release, id, msg, meta (鍚?overview銆乸oster)
+    on_select_cb(idx): 鐢ㄦ埛鐐瑰嚮鏌愬崱鐗?閫夋嫨"鎸夐挳鏃剁殑鍥炶皟
     """
     image_cache = []
-    accent_bars = []   # 每张卡片的左侧蓝色选中标记条
+    accent_bars = []   # 姣忓紶鍗＄墖鐨勫乏渚ц摑鑹查€変腑鏍囪鏉?
 
-    # 用 Pillow 生成固定像素尺寸的灰色占位图，避免 tk.Label 字符单位问题
+    # 鐢?Pillow 鐢熸垚鍥哄畾鍍忕礌灏哄鐨勭伆鑹插崰浣嶅浘锛岄伩鍏?tk.Label 瀛楃鍗曚綅闂
     _placeholder = ImageTk.PhotoImage(
         Image.new("RGB", (_POSTER_W, _POSTER_H), "#cccccc")
     )
@@ -290,7 +290,7 @@ def _build_scrollable_cards(parent, items, on_select_cb):
         on_select_cb(idx)
 
     for idx, item in enumerate(items):
-        title = item.get("title") or "未知"
+        title = item.get("title") or "鏈煡"
         release = item.get("release") or ""
         year = release[:4] if release and len(release) >= 4 else "-"
         tmdb_id = item.get("id") or "-"
@@ -305,18 +305,18 @@ def _build_scrollable_cards(parent, items, on_select_cb):
         card = ttk.Frame(inner, relief="groove", borderwidth=1, padding=4)
         card.pack(fill=tk.X, padx=6, pady=3)
 
-        # 左侧选中高亮竖条（未选中=灰色，选中=蓝色）
+        # 宸︿晶閫変腑楂樹寒绔栨潯锛堟湭閫変腑=鐏拌壊锛岄€変腑=钃濊壊锛?
         accent = tk.Frame(card, width=5, bg="#d0d0d0")
         accent.grid(row=0, column=0, rowspan=3, sticky="ns", padx=(0, 6))
         accent_bars.append(accent)
 
-        # 海报图（直接用 image 模式，像素级精确尺寸）
+        # 娴锋姤鍥撅紙鐩存帴鐢?image 妯″紡锛屽儚绱犵骇绮剧‘灏哄锛?
         poster_lbl = tk.Label(card, image=_placeholder, borderwidth=0, cursor="hand2")
         poster_lbl.grid(row=0, column=1, rowspan=3, padx=(0, 8), pady=2, sticky="ns")
         if poster_url:
             _load_poster_async(poster_url, poster_lbl, image_cache)
 
-        # 中部文字区
+        # 涓儴鏂囧瓧鍖?
         id_tag = f"TMDB ID: {tmdb_id}" if "BGM" not in source else f"BGM ID: {tmdb_id}"
         header_frame = ttk.Frame(card)
         header_frame.grid(row=0, column=2, sticky="w")
@@ -338,7 +338,7 @@ def _build_scrollable_cards(parent, items, on_select_cb):
             foreground="#555555", font=("", 9),
         ).grid(row=1, column=2, sticky="w", pady=(0, 2))
 
-        # 右侧选择按钮
+        # 鍙充晶閫夋嫨鎸夐挳
         def _make_cb(i):
             def _cb():
                 _highlight(i)
@@ -349,7 +349,7 @@ def _build_scrollable_cards(parent, items, on_select_cb):
 
         card.columnconfigure(2, weight=1)
 
-        # 点击卡片任意位置也触发高亮
+        # 鐐瑰嚮鍗＄墖浠绘剰浣嶇疆涔熻Е鍙戦珮浜?
         def _make_click_cb(i):
             def _cb(event=None):
                 _highlight(i)
@@ -358,10 +358,10 @@ def _build_scrollable_cards(parent, items, on_select_cb):
         for w in (card, poster_lbl, accent):
             w.bind("<Button-1>", _make_click_cb(idx))
 
-    # 所有卡片构建完毕后，递归绑定滚轮到全部子控件
+    # 鎵€鏈夊崱鐗囨瀯寤哄畬姣曞悗锛岄€掑綊缁戝畾婊氳疆鍒板叏閮ㄥ瓙鎺т欢
     _bind_scroll_recursive(outer, _scroll)
 
-    # 将 image_cache 挂到 outer widget 上，防止 PhotoImage 被 Python GC 提前回收
+    # 灏?image_cache 鎸傚埌 outer widget 涓婏紝闃叉 PhotoImage 琚?Python GC 鎻愬墠鍥炴敹
     outer._image_cache = image_cache
 
     return outer
@@ -389,6 +389,9 @@ def request_manual_candidate_choice(
     recognized_title=None,
 ):
     """Schedule manual picker on main thread and wait from worker thread."""
+    if gui.preview_skip_all_event.is_set():
+        return None
+
     result_holder = {"selected": None}
     done_event = threading.Event()
 
@@ -416,6 +419,8 @@ def request_manual_candidate_choice(
 
     gui.root.after(0, lambda: gui.tree.set(item["id"], "st", "多候选，等待手动选择"))
     with gui.popup_lock:
+        if gui.preview_skip_all_event.is_set():
+            return None
         gui.root.after(0, _schedule_dialog)
         if not done_event.wait(timeout=120):
             logging.warning("手动候选选择等待超时，已跳过该文件")
@@ -452,7 +457,7 @@ def show_candidate_picker_dialog(
     searched_text = str(query_title or "").strip()
 
     if recognized_text and searched_text and recognized_text != searched_text:
-        title_block = f"识别标题: {recognized_text}\n检索标题: {searched_text}"
+        title_block = f"识别标题: {recognized_text}\n搜索标题: {searched_text}"
     else:
         title_block = f"识别标题: {recognized_text or searched_text}"
 
@@ -469,27 +474,54 @@ def show_candidate_picker_dialog(
     card_area.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
 
     selected_holder = {"idx": -1}
+    dialog_closed = {"done": False}
 
     def on_card_select(idx):
         selected_holder["idx"] = idx
 
     _build_scrollable_cards(card_area, candidates, on_card_select)
 
+    def _finalize(selected):
+        if dialog_closed["done"]:
+            return
+        dialog_closed["done"] = True
+        result_holder["selected"] = selected
+        if not done_event.is_set():
+            done_event.set()
+        gui.status.config(text=prev_status)
+
+    def _close_with_result(selected):
+        if dialog_closed["done"]:
+            return
+        result_holder["selected"] = selected
+        try:
+            if select_win.winfo_exists():
+                try:
+                    select_win.grab_release()
+                except Exception:
+                    pass
+                select_win.destroy()
+        finally:
+            _finalize(result_holder.get("selected"))
+
     def on_confirm():
         idx = selected_holder["idx"]
         if idx < 0 or idx >= len(candidates):
             messagebox.showinfo("提示", '请先点击某条目的"选择"按钮', parent=select_win)
             return
-        result_holder["selected"] = candidates[idx]
-        if not done_event.is_set():
-            done_event.set()
-        select_win.destroy()
+        _close_with_result(candidates[idx])
 
     def on_skip():
-        result_holder["selected"] = None
-        if not done_event.is_set():
-            done_event.set()
-        select_win.destroy()
+        _close_with_result(None)
+
+    def on_close_skip_all():
+        gui.preview_skip_all_event.set()
+        gui.root.after(0, lambda: gui.status.config(text="已终止本轮剩余识别"))
+        _close_with_result(None)
+
+    def on_destroy(event):
+        if event.widget is select_win:
+            _finalize(result_holder.get("selected"))
 
     btn_frame = ttk.Frame(select_win)
     btn_frame.pack(fill=tk.X, padx=10, pady=8)
@@ -498,14 +530,12 @@ def show_candidate_picker_dialog(
         side=tk.LEFT, padx=8
     )
 
-    select_win.protocol("WM_DELETE_WINDOW", on_skip)
+    select_win.bind("<Destroy>", on_destroy)
+    select_win.bind("<Escape>", lambda _e: on_skip())
+    select_win.protocol("WM_DELETE_WINDOW", on_close_skip_all)
     select_win.grab_set()
-    try:
-        select_win.wait_window()
-    finally:
-        if not done_event.is_set():
-            done_event.set()
-        gui.status.config(text=prev_status)
+    select_win.wait_window()
+    _finalize(result_holder.get("selected"))
 
 
 def show_context_menu(gui, event):
@@ -518,8 +548,13 @@ def show_context_menu(gui, event):
         sel_count = len(gui.tree.selection())
         menu = tk.Menu(gui.root, tearoff=0)
         menu.add_command(
-            label=f"手动精准匹配并锁定 (将应用到选中的 {sel_count} 个文件)",
+            label=f"手动精准匹配并锁定(将应用到选中的 {sel_count} 个文件)",
             command=gui.manual_match,
+        )
+        menu.add_separator()
+        menu.add_command(
+            label="从列表删除该文件",
+            command=lambda row_id=row: gui.remove_file_by_row_id(row_id),
         )
         menu.post(event.x_root, event.y_root)
 
@@ -547,8 +582,8 @@ def manual_match(gui):
     )
 
     user_input = simpledialog.askstring(
-        "搜索锁定",
-        f"您选中了 {len(selected_ids)} 个文件。\n\n输入资料库数字ID或搜索关键词进行强制匹配:",
+        "鎼滅储閿佸畾",
+        f"鎮ㄩ€変腑浜?{len(selected_ids)} 涓枃浠躲€俓n\n杈撳叆璧勬枡搴撴暟瀛桰D鎴栨悳绱㈠叧閿瘝杩涜寮哄埗鍖归厤:",
         initialvalue=search_initial,
         parent=gui.root,
     )
@@ -558,7 +593,7 @@ def manual_match(gui):
 
     user_input = user_input.strip()
     mode = gui.source_var.get()
-    gui.status.config(text="正在联网搜索，请稍候...")
+    gui.status.config(text="姝ｅ湪鑱旂綉鎼滅储锛岃绋嶅€?..")
 
     threading.Thread(
         target=gui._async_manual_match_search,
@@ -577,12 +612,12 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
         if not code or code == ERROR_CODE_NO_RESULT:
             return
         prefix = {
-            ERROR_CODE_TIMEOUT: "请求超时",
-            ERROR_CODE_CONFIG: "配置缺失",
-            ERROR_CODE_HTTP: "HTTP失败",
-            ERROR_CODE_PARSE: "响应解析失败",
-            ERROR_CODE_UNKNOWN: "请求异常",
-        }.get(code, "请求异常")
+            ERROR_CODE_TIMEOUT: "璇锋眰瓒呮椂",
+            ERROR_CODE_CONFIG: "閰嶇疆缂哄け",
+            ERROR_CODE_HTTP: "HTTP澶辫触",
+            ERROR_CODE_PARSE: "鍝嶅簲瑙ｆ瀽澶辫触",
+            ERROR_CODE_UNKNOWN: "璇锋眰寮傚父",
+        }.get(code, "璇锋眰寮傚父")
         final_text = detail or str(msg_text)
         search_errors.append(f"{source_name}{prefix}: {final_text}")
 
@@ -599,12 +634,12 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                     user_input, True, gui.tmdb_api_key.get()
                 )
                 if tid == "None":
-                    append_error("TMDb剧集", msg)
+                    append_error("TMDb鍓ч泦", msg)
                     t, tid, msg, meta = fetch_tmdb_by_id(
                         user_input, False, gui.tmdb_api_key.get()
                     )
                     if tid == "None":
-                        append_error("TMDb电影", msg)
+                        append_error("TMDb鐢靛奖", msg)
                 if tid != "None":
                     results = [(t, tid, msg, meta)]
         else:
@@ -624,7 +659,7 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                     items = res.json().get("list", [])
 
                     for it in items[:5]:
-                        title = it.get("name_cn") or it.get("name") or "未知"
+                        title = it.get("name_cn") or it.get("name") or "鏈煡"
                         meta = {
                             "overview": it.get("summary", ""),
                             "rating": it.get("score", 0),
@@ -632,26 +667,26 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                             "fanart": "",
                             "release": it.get("air_date", ""),
                         }
-                        results.append((title, str(it.get("id")), "搜索结果", meta))
+                        results.append((title, str(it.get("id")), "鎼滅储缁撴灉", meta))
                 except requests.exceptions.Timeout:
-                    append_error("BGM", format_error_message(ERROR_CODE_TIMEOUT, "请求超时"))
+                    append_error("BGM", format_error_message(ERROR_CODE_TIMEOUT, "璇锋眰瓒呮椂"))
                 except requests.exceptions.HTTPError as err:
                     snippet = _response_body_snippet(getattr(err, "response", None))
                     if snippet:
-                        logging.warning(f"BGM手动搜索HTTP失败，返回内容: {snippet}")
+                        logging.warning(f"BGM鎵嬪姩鎼滅储HTTP澶辫触锛岃繑鍥炲唴瀹? {snippet}")
                     append_error(
-                        "BGM", format_error_message(ERROR_CODE_HTTP, f"HTTP请求失败: {err}")
+                        "BGM", format_error_message(ERROR_CODE_HTTP, f"HTTP璇锋眰澶辫触: {err}")
                     )
                 except ValueError as err:
                     snippet = _response_body_snippet(locals().get("res"))
                     if snippet:
-                        logging.warning(f"BGM手动搜索解析失败，返回内容: {snippet}")
+                        logging.warning(f"BGM鎵嬪姩鎼滅储瑙ｆ瀽澶辫触锛岃繑鍥炲唴瀹? {snippet}")
                     append_error(
-                        "BGM", format_error_message(ERROR_CODE_PARSE, f"响应解析失败: {err}")
+                        "BGM", format_error_message(ERROR_CODE_PARSE, f"鍝嶅簲瑙ｆ瀽澶辫触: {err}")
                     )
                 except Exception as err:
-                    logging.error(f"BGM手动搜索请求失败: {err}")
-                    append_error("BGM", format_error_message(ERROR_CODE_UNKNOWN, "请求异常"))
+                    logging.error(f"BGM鎵嬪姩鎼滅储璇锋眰澶辫触: {err}")
+                    append_error("BGM", format_error_message(ERROR_CODE_UNKNOWN, "璇锋眰寮傚父"))
             else:
                 try:
                     res_tv = session.get(
@@ -674,7 +709,7 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                             "fanart": it.get("backdrop_path", ""),
                             "release": it.get("first_air_date", ""),
                         }
-                        results.append((it.get("name", "未知"), str(it.get("id")), "TMDb剧集", meta))
+                        results.append((it.get("name", "鏈煡"), str(it.get("id")), "TMDb鍓ч泦", meta))
 
                     res_movie = session.get(
                         "https://api.themoviedb.org/3/search/movie",
@@ -696,29 +731,29 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                             "fanart": it.get("backdrop_path", ""),
                             "release": it.get("release_date", ""),
                         }
-                        results.append((it.get("title", "未知"), str(it.get("id")), "TMDb电影", meta))
+                        results.append((it.get("title", "鏈煡"), str(it.get("id")), "TMDb鐢靛奖", meta))
                 except requests.exceptions.Timeout:
-                    append_error("TMDb", format_error_message(ERROR_CODE_TIMEOUT, "请求超时"))
+                    append_error("TMDb", format_error_message(ERROR_CODE_TIMEOUT, "璇锋眰瓒呮椂"))
                 except requests.exceptions.HTTPError as err:
                     snippet = _response_body_snippet(getattr(err, "response", None))
                     if snippet:
-                        logging.warning(f"TMDb手动搜索HTTP失败，返回内容: {snippet}")
+                        logging.warning(f"TMDb鎵嬪姩鎼滅储HTTP澶辫触锛岃繑鍥炲唴瀹? {snippet}")
                     append_error(
-                        "TMDb", format_error_message(ERROR_CODE_HTTP, f"HTTP请求失败: {err}")
+                        "TMDb", format_error_message(ERROR_CODE_HTTP, f"HTTP璇锋眰澶辫触: {err}")
                     )
                 except ValueError as err:
                     snippet = _response_body_snippet(locals().get("res_tv") or locals().get("res_movie"))
                     if snippet:
-                        logging.warning(f"TMDb手动搜索解析失败，返回内容: {snippet}")
+                        logging.warning(f"TMDb鎵嬪姩鎼滅储瑙ｆ瀽澶辫触锛岃繑鍥炲唴瀹? {snippet}")
                     append_error(
-                        "TMDb", format_error_message(ERROR_CODE_PARSE, f"响应解析失败: {err}")
+                        "TMDb", format_error_message(ERROR_CODE_PARSE, f"鍝嶅簲瑙ｆ瀽澶辫触: {err}")
                     )
                 except Exception as err:
-                    logging.error(f"TMDb手动搜索请求失败: {err}")
-                    append_error("TMDb", format_error_message(ERROR_CODE_UNKNOWN, "请求异常"))
+                    logging.error(f"TMDb鎵嬪姩鎼滅储璇锋眰澶辫触: {err}")
+                    append_error("TMDb", format_error_message(ERROR_CODE_UNKNOWN, "璇锋眰寮傚父"))
     except Exception as err:
-        logging.error(f"手动匹配搜索失败: {err}")
-        append_error("手动匹配", format_error_message(ERROR_CODE_UNKNOWN, str(err)))
+        logging.error(f"鎵嬪姩鍖归厤鎼滅储澶辫触: {err}")
+        append_error("鎵嬪姩鍖归厤", format_error_message(ERROR_CODE_UNKNOWN, str(err)))
 
     poster_urls = []
     for _, _, _, meta in results:
@@ -750,7 +785,7 @@ def show_manual_match_results(gui, selected_ids, results, error_msg=""):
         )
         return
 
-    # 将 (title, tid, msg, meta) tuple 列表转成 dict 供卡片组件使用
+    # 灏?(title, tid, msg, meta) tuple 鍒楄〃杞垚 dict 渚涘崱鐗囩粍浠朵娇鐢?
     items = []
     for title, tid, msg, meta in results:
         release = (meta or {}).get("release", "")
@@ -822,7 +857,7 @@ def confirm_season_and_dispatch(gui, selected_ids, title, tid, msg, meta, dialog
                 gui.forced_seasons[path_key] = new_s
                 gui.forced_offsets[path_key] = offset
 
-    gui.status.config(text="后台并发匹配中...")
+    gui.status.config(text="鍚庡彴骞跺彂鍖归厤涓?..")
     gui.pbar["value"] = 0
     gui.pbar.config(maximum=len(matching_indices))
 
@@ -831,3 +866,5 @@ def confirm_season_and_dispatch(gui, selected_ids, title, tid, msg, meta, dialog
         args=(matching_indices, title, tid, msg, meta),
         daemon=True,
     ).start()
+
+

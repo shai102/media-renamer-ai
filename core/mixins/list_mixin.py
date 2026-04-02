@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 import tkinter as tk
 
@@ -74,3 +74,37 @@ class ListMixin:
 
         clear_api_cache_file()
         self.status.config(text="列表与缓存已清空")
+
+    def select_all_files(self, event=None):
+        """Select all rows in the file list."""
+        row_ids = self.tree.get_children()
+        if row_ids:
+            self.tree.selection_set(row_ids)
+            self.tree.focus(row_ids[0])
+        return "break"
+
+    def remove_file_by_row_id(self, row_id):
+        """Remove one file entry from list/tree by Treeview row id."""
+        if not row_id:
+            return False
+
+        idx = next(
+            (i for i, it in enumerate(self.file_list) if it.get("id") == row_id),
+            None,
+        )
+        if idx is None:
+            return False
+
+        removed = self.file_list.pop(idx)
+        path_key = removed.get("path", "")
+
+        if self.tree.exists(row_id):
+            self.tree.delete(row_id)
+
+        with self.cache_lock:
+            self.manual_locks.pop(path_key, None)
+            self.forced_seasons.pop(path_key, None)
+            self.forced_offsets.pop(path_key, None)
+
+        self.status.config(text="已从列表删除 1 个文件")
+        return True
