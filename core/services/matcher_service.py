@@ -9,6 +9,9 @@ from utils.helpers import (
     ERROR_CODE_PARSE,
     ERROR_CODE_TIMEOUT,
     ERROR_CODE_UNKNOWN,
+    TIMEOUT_OLLAMA_CHAT,
+    TIMEOUT_OLLAMA_EMBED,
+    TIMEOUT_OLLAMA_TAGS,
     clean_search_title,
     extract_year_from_release,
     format_candidate_label,
@@ -23,6 +26,12 @@ def ollama_post_json(base_url, endpoint, payload, timeout):
     if not normalized:
         raise ValueError("Ollama URL 未配置")
     return requests.post(normalized + endpoint, json=payload, timeout=timeout)
+
+
+def _extract_item_old_name(item):
+    if isinstance(item, dict):
+        return str(item.get("old_name", "") or "")
+    return str(getattr(item, "old_name", "") or "")
 
 
 def extract_ollama_model_names(payload):
@@ -51,7 +60,7 @@ def list_ollama_models(base_url):
         return [], "Ollama URL 未配置"
 
     try:
-        response = requests.get(normalized + "/api/tags", timeout=60)
+        response = requests.get(normalized + "/api/tags", timeout=TIMEOUT_OLLAMA_TAGS)
         response.raise_for_status()
         try:
             payload = response.json()
@@ -140,11 +149,13 @@ def parse_with_ollama(base_url, model, filename, temperature=0.2, top_p=0.9):
             "top_p": _normalize_top_p(top_p),
             "num_predict": 200,
         },
-        "timeout": 60,
+        "timeout": TIMEOUT_OLLAMA_CHAT[1],
     }
 
     try:
-        response = ollama_post_json(base_url, "/api/chat", payload, timeout=60)
+        response = ollama_post_json(
+            base_url, "/api/chat", payload, timeout=TIMEOUT_OLLAMA_CHAT
+        )
         response.raise_for_status()
         resp = response.json()
 
@@ -213,7 +224,9 @@ def get_embedding(base_url, embedding_model, text, cache, cache_lock, preferred_
 
     for endpoint in endpoints:
         try:
-            response = ollama_post_json(base_url, endpoint, payload, timeout=60)
+            response = ollama_post_json(
+                base_url, endpoint, payload, timeout=TIMEOUT_OLLAMA_EMBED
+            )
             if response.status_code == 404:
                 continue
             response.raise_for_status()
@@ -242,7 +255,7 @@ def rerank_candidates_with_embedding(item, query_title, year, is_tv, source_name
         return candidates, None, ""
 
     # 用去噪后的文件名（而非原始噪声版本）丰富查询语义
-    clean_fn = clean_search_title(os.path.splitext(item.get("old_name", ""))[0])
+    clean_fn = clean_search_title(os.path.splitext(_extract_item_old_name(item))[0])
     query_text = (
         f"标题:{query_title}; "
         f"文件:{clean_fn}; "
@@ -298,7 +311,7 @@ def pick_candidate_with_ollama(
             f"{idx}. 标题={candidate.get('title', '')}; 原名={candidate.get('alt_title', '')}; 年份={extract_year_from_release(candidate.get('release')) or '-'}; ID={candidate.get('id')}; 评分={candidate.get('rating', 0)}"
         )
 
-    clean_name = os.path.splitext(item.get("old_name", ""))[0]
+    clean_name = os.path.splitext(_extract_item_old_name(item))[0]
     prompt = f"""你是媒体数据库匹配助手。请根据文件名、解析出的标题和年份，从候选中选出最可能匹配的一项。
 如果无法确定，必须返回 pick 为 0。只允许输出 JSON，不要输出额外说明。
 JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
@@ -321,11 +334,13 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
         ],
         "stream": False,
         "options": {"temperature": _normalize_temperature(temperature)},
-        "timeout": 60,
+        "timeout": TIMEOUT_OLLAMA_CHAT[1],
     }
 
     try:
-        response = ollama_post_json(base_url, "/api/chat", payload, timeout=60)
+        response = ollama_post_json(
+            base_url, "/api/chat", payload, timeout=TIMEOUT_OLLAMA_CHAT
+        )
         response.raise_for_status()
         resp = response.json()
         content = resp.get("message", {}).get("content", "").strip()

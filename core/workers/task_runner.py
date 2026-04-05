@@ -14,6 +14,12 @@ from db.tmdb_api import (
     fetch_tmdb_episode_meta,
     fetch_tmdb_season_poster,
 )
+from core.workers.execution_runner import (
+    process_one_file as execution_process_one_file,
+    process_one_file_scrape as execution_process_one_file_scrape,
+    run_execution as execution_run_execution,
+    run_scrape_execution as execution_run_scrape_execution,
+)
 from utils.helpers import (
     ERROR_CODE_UNKNOWN,
     derive_title_from_filename,
@@ -53,10 +59,10 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
     item = None
     try:
         item = gui.file_list[idx]
-        pure, ext = gui.extract_lang_and_ext(item["old_name"])
+        pure, ext = gui.extract_lang_and_ext(item.old_name)
         g = guessit(pure)
-        m = item.get("metadata", {})
-        path_key = item["path"]
+        m = item.metadata or {}
+        path_key = item.path
 
         forced_s = gui.forced_seasons.get(path_key)
         s = (
@@ -109,7 +115,7 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
         s_fmt = f"{int(s):02d}"
         e_fmt = f"{int(e_calc):02d}"
 
-        v_tag = gui._get_version_tag(item["path"])
+        v_tag = gui._get_version_tag(item.path)
         safe_title = safe_filename(title)
         safe_ep_name = safe_filename(ep_n_final)
 
@@ -137,7 +143,7 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
         new_fn = re.sub(r"\s*-\s*(?=\.)|\s*-\s*$", "", new_fn)
         new_fn = re.sub(r"\s+(?=\.)", "", new_fn).strip()
 
-        item["metadata"] = {
+        item.metadata = {
             "id": t_id,
             "provider": "tmdb" if mode == "siliconflow_tmdb" else "bgm",
             "title": safe_title,
@@ -153,7 +159,7 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
             "s_poster": s_p,
             "type": media_type,
         }
-        item["new_name_only"] = new_fn
+        item.new_name_only = new_fn
 
         root_d = gui.target_root.get().strip()
         if root_d:
@@ -161,7 +167,7 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
             folder_name = safe_filename(f"{safe_title} [{id_tag}]")
             season_folder = f"Season {s}"
             if is_tv:
-                item["full_target"] = os.path.join(
+                item.full_target = os.path.join(
                     root_d, folder_name, season_folder, new_fn
                 )
             else:
@@ -172,19 +178,19 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
                     )
                 else:
                     folder_name = safe_filename(f"{safe_title} [{id_tag}]")
-                item["full_target"] = os.path.join(root_d, folder_name, new_fn)
+                item.full_target = os.path.join(root_d, folder_name, new_fn)
         else:
-            item["full_target"] = ""
+            item.full_target = ""
 
         gui.root.after(
             0,
             lambda: gui.tree.item(
-                item["id"],
+                item.id,
                 values=(
-                    item["old_name"],
+                    item.old_name,
                     safe_title,
                     t_id,
-                    item["full_target"] or new_fn,
+                    item.full_target or new_fn,
                     msg,
                 ),
             ),
@@ -192,10 +198,10 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
     except Exception as err:
         logging.error(f"更新UI失败: {err}")
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"更新失败: {str(err)[:30]}")
-        if item and item.get("id"):
+        if item and item.id:
             gui.root.after(
                 0,
-                lambda id_val=item["id"], msg=err_msg: gui.tree.set(
+                lambda id_val=item.id, msg=err_msg: gui.tree.set(
                     id_val, "st", gui._friendly_status_text(msg)
                 ),
             )
@@ -241,22 +247,22 @@ def process_task(gui, i):
     try:
         if gui.preview_skip_all_event.is_set():
             gui.root.after(
-                0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "已跳过")
+                0, lambda id_val=item.id: gui.tree.set(id_val, "st", "已跳过")
             )
             return
 
         gui.root.after(
-            0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "识别中")
+            0, lambda id_val=item.id: gui.tree.set(id_val, "st", "识别中")
         )
 
         if gui.preview_skip_all_event.is_set():
             gui.root.after(
-                0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "已跳过")
+                0, lambda id_val=item.id: gui.tree.set(id_val, "st", "已跳过")
             )
             return
 
-        pure, ext = gui.extract_lang_and_ext(item["old_name"])
-        dir_p = item["dir"]
+        pure, ext = gui.extract_lang_and_ext(item.old_name)
+        dir_p = item.dir
         mode = gui.source_var.get()
         g = guessit(pure)
 
@@ -343,7 +349,7 @@ def process_task(gui, i):
 
         media_type = gui._resolve_media_type(g)
         is_tv = media_type == "episode"
-        path_key = item["path"]
+        path_key = item.path
 
         forced_s = gui.forced_seasons.get(path_key)
         if forced_s is not None:
@@ -426,7 +432,7 @@ def process_task(gui, i):
         s_fmt = f"{int(s):02d}"
         e_fmt = f"{int(e_calc):02d}"
 
-        v_tag = gui._get_version_tag(item["path"])
+        v_tag = gui._get_version_tag(item.path)
 
         safe_std_t = safe_filename(std_t)
         safe_ep_name = safe_filename(ep_n_final)
@@ -455,7 +461,7 @@ def process_task(gui, i):
         new_fn = re.sub(r"\s*-\s*(?=\.)|\s*-\s*$", "", new_fn)
         new_fn = re.sub(r"\s+(?=\.)", "", new_fn).strip()
 
-        item["metadata"] = {
+        item.metadata = {
             "id": tid,
             "provider": "tmdb" if mode == "siliconflow_tmdb" else "bgm",
             "title": safe_std_t,
@@ -472,7 +478,7 @@ def process_task(gui, i):
             "type": media_type,
         }
 
-        item["new_name_only"] = new_fn
+        item.new_name_only = new_fn
 
         root_d = gui.target_root.get().strip()
         if root_d:
@@ -481,7 +487,7 @@ def process_task(gui, i):
             season_folder = f"Season {s}"
 
             if is_tv:
-                item["full_target"] = os.path.join(
+                item.full_target = os.path.join(
                     root_d, folder_name, season_folder, new_fn
                 )
             else:
@@ -492,30 +498,30 @@ def process_task(gui, i):
                     )
                 else:
                     folder_name = safe_filename(f"{safe_std_t} [{id_tag}]")
-                item["full_target"] = os.path.join(root_d, folder_name, new_fn)
+                item.full_target = os.path.join(root_d, folder_name, new_fn)
         else:
-            item["full_target"] = ""
+            item.full_target = ""
 
         gui.root.after(
             0,
             lambda: gui.tree.item(
-                item["id"],
+                item.id,
                 values=(
-                    item["old_name"],
+                    item.old_name,
                     safe_std_t,
                     tid,
-                    item["full_target"] or new_fn,
+                    item.full_target or new_fn,
                     gui._build_status_text(ai_msg, db_m),
                 ),
             ),
         )
     except Exception as ex:
-        logging.error(f"处理文件 {item['old_name']} 时出错: {ex}")
+        logging.error(f"处理文件 {item.old_name} 时出错: {ex}")
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"异常: {str(ex)[:50]}")
         gui.root.after(
             0,
-            lambda id_val=item["id"],
-            old_name=item["old_name"],
+            lambda id_val=item.id,
+            old_name=item.old_name,
             msg=err_msg: gui.tree.item(
                 id_val,
                 values=(
@@ -533,176 +539,20 @@ def process_task(gui, i):
 
 def run_execution(gui, is_archive):
     """Run rename/archive execution with background worker pool."""
-    total = len(gui.file_list)
-    gui.root.after(
-        0,
-        lambda max_v=total: [
-            gui.status.config(text="执行中..."),
-            gui.pbar.config(maximum=max_v),
-            gui.pbar.configure(value=0),
-        ],
-    )
-
-    try:
-        with ThreadPoolExecutor(max_workers=gui._get_execution_workers()) as executor:
-            futures = [
-                executor.submit(gui.process_one_file, item, is_archive)
-                for item in gui.file_list
-            ]
-            for future in as_completed(futures):
-                gui.root.after(0, lambda: gui.pbar.step(1))
-                try:
-                    future.result()
-                except Exception as err:
-                    logging.error(f"执行失败: {err}")
-    except Exception as err:
-        logging.error(f"执行线程池失败: {err}")
-        err_msg = f"执行失败: {err}"
-        gui.root.after(
-            0,
-            lambda msg=err_msg: messagebox.showerror("错误", msg, parent=gui.root),
-        )
-
-    gui.root.after(0, lambda: gui.status.config(text="任务全部完成"))
+    return execution_run_execution(gui, is_archive)
 
 
 def process_one_file(gui, item, is_archive):
     """Process single file move/rename and sidecar writing."""
-    try:
-        if is_archive and item.get("full_target"):
-            target = item["full_target"]
-        else:
-            target = os.path.join(
-                item["dir"], item.get("new_name_only", item["old_name"])
-            )
-
-        if not os.path.exists(item["path"]):
-            gui.root.after(
-                0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "源文件不存在")
-            )
-            return
-
-        target_dir = os.path.dirname(target)
-        if target_dir:
-            os.makedirs(target_dir, exist_ok=True)
-
-        current_path = item["path"]
-        same_exact_path = current_path == target
-        is_case_change_only = os.path.normcase(current_path) == os.path.normcase(target)
-
-        if not same_exact_path and not is_case_change_only and os.path.exists(target):
-            gui.root.after(
-                0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "目标已存在")
-            )
-            return
-
-        if not same_exact_path:
-            import shutil
-
-            shutil.move(current_path, target)
-            item["path"] = target
-
-        done_text = "归档完成" if is_archive else "重命名完成"
-        gui.root.after(
-            0, lambda id_val=item["id"], txt=done_text: gui.tree.set(id_val, "st", txt)
-        )
-
-    except PermissionError as err:
-        logging.error(f"权限错误 {item.get('path', '')}: {err}")
-        gui.root.after(
-            0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "权限错误")
-        )
-    except OSError as err:
-        logging.error(f"系统错误 {item.get('path', '')}: {err}")
-        err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"系统错误: {str(err)[:20]}")
-        gui.root.after(
-            0,
-            lambda id_val=item["id"], msg=err_msg: gui.tree.set(
-                id_val, "st", gui._friendly_status_text(msg)
-            ),
-        )
-    except Exception as err:
-        logging.error(f"处理文件失败 {item.get('path', '')}: {err}")
-        err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"失败: {str(err)[:20]}")
-        gui.root.after(
-            0,
-            lambda id_val=item["id"], msg=err_msg: gui.tree.set(
-                id_val, "st", gui._friendly_status_text(msg)
-            ),
-        )
+    return execution_process_one_file(gui, item, is_archive)
 
 
 def run_scrape_execution(gui):
     """Run scrape-only execution with background worker pool."""
-    total = len(gui.file_list)
-    gui.root.after(
-        0,
-        lambda max_v=total: [
-            gui.status.config(text="刮削中..."),
-            gui.pbar.config(maximum=max_v),
-            gui.pbar.configure(value=0),
-        ],
-    )
-
-    try:
-        with ThreadPoolExecutor(max_workers=gui._get_execution_workers()) as executor:
-            futures = [
-                executor.submit(gui.process_one_file_scrape, item)
-                for item in gui.file_list
-            ]
-            for future in as_completed(futures):
-                gui.root.after(0, lambda: gui.pbar.step(1))
-                try:
-                    future.result()
-                except Exception as err:
-                    logging.error(f"刮削失败: {err}")
-    except Exception as err:
-        logging.error(f"刮削线程池失败: {err}")
-        err_msg = f"刮削失败: {err}"
-        gui.root.after(
-            0,
-            lambda msg=err_msg: messagebox.showerror("错误", msg, parent=gui.root),
-        )
-
-    gui.root.after(0, lambda: gui.status.config(text="刮削全部完成"))
+    return execution_run_scrape_execution(gui)
 
 
 def process_one_file_scrape(gui, item):
     """Process single file scrape-only (write NFO and download images)."""
-    try:
-        target_path = item.get("path", "")
-        if not target_path or not os.path.exists(target_path):
-            gui.root.after(
-                0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "源文件不存在")
-            )
-            return
-
-        gui._write_sidecar_files(item, target_path)
-        gui.root.after(
-            0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "刮削完成")
-        )
-
-    except PermissionError as err:
-        logging.error(f"刮削权限错误 {item.get('path', '')}: {err}")
-        gui.root.after(
-            0, lambda id_val=item["id"]: gui.tree.set(id_val, "st", "权限错误")
-        )
-    except OSError as err:
-        logging.error(f"刮削系统错误 {item.get('path', '')}: {err}")
-        err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"系统错误: {str(err)[:20]}")
-        gui.root.after(
-            0,
-            lambda id_val=item["id"], msg=err_msg: gui.tree.set(
-                id_val, "st", gui._friendly_status_text(msg)
-            ),
-        )
-    except Exception as err:
-        logging.error(f"刮削文件失败 {item.get('path', '')}: {err}")
-        err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"失败: {str(err)[:20]}")
-        gui.root.after(
-            0,
-            lambda id_val=item["id"], msg=err_msg: gui.tree.set(
-                id_val, "st", gui._friendly_status_text(msg)
-            ),
-        )
+    return execution_process_one_file_scrape(gui, item)
 

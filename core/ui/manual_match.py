@@ -20,6 +20,7 @@ from utils.helpers import (
     ERROR_CODE_PARSE,
     ERROR_CODE_TIMEOUT,
     ERROR_CODE_UNKNOWN,
+    TIMEOUT_DB_SEARCH,
     USER_AGENT,
     center_window,
     clean_search_title,
@@ -414,10 +415,10 @@ def request_manual_candidate_choice(
         if poster_url:
             poster_urls.append(poster_url)
 
-    gui.root.after(0, lambda: gui.tree.set(item["id"], "st", "海报加载中..."))
+    gui.root.after(0, lambda: gui.tree.set(item.id, "st", "海报加载中..."))
     _prefetch_poster_urls(poster_urls)
 
-    gui.root.after(0, lambda: gui.tree.set(item["id"], "st", "多候选，等待手动选择"))
+    gui.root.after(0, lambda: gui.tree.set(item.id, "st", "多候选，等待手动选择"))
     with gui.popup_lock:
         if gui.preview_skip_all_event.is_set():
             return None
@@ -427,7 +428,7 @@ def request_manual_candidate_choice(
             done_event.set()
             gui.root.after(
                 0,
-                lambda: gui.tree.set(item["id"], "st", "手动选择超时，已跳过"),
+                lambda: gui.tree.set(item.id, "st", "手动选择超时，已跳过"),
             )
     return result_holder.get("selected")
 
@@ -444,7 +445,7 @@ def show_candidate_picker_dialog(
 ):
     """Show candidate picker dialog for ambiguous DB matches."""
     prev_status = gui.status.cget("text")
-    gui.status.config(text=f"等待手动选择: {item.get('old_name', '')}")
+    gui.status.config(text=f"等待手动选择: {item.old_name}")
 
     select_win = Toplevel(gui.root)
     select_win.title(f"手动确认 {source_name} 匹配")
@@ -462,7 +463,7 @@ def show_candidate_picker_dialog(
         title_block = f"识别标题: {recognized_text or searched_text}"
 
     label_text = (
-        f"文件: {item.get('old_name', '')}\n"
+        f"文件: {item.old_name}\n"
         f"{title_block}\n"
         "请在下方候选中选择正确条目："
     )
@@ -567,7 +568,7 @@ def manual_match(gui):
 
     first_row_id = selected_ids[0]
     first_idx = next(
-        (i for i, it in enumerate(gui.file_list) if it["id"] == first_row_id), None
+        (i for i, it in enumerate(gui.file_list) if it.id == first_row_id), None
     )
 
     if first_idx is None:
@@ -578,7 +579,7 @@ def manual_match(gui):
     search_initial = (
         current_display_title
         if current_display_title
-        else clean_search_title(item["old_name"])
+        else clean_search_title(item.old_name)
     )
 
     user_input = simpledialog.askstring(
@@ -653,7 +654,7 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                     res = session.get(
                         f"https://api.bgm.tv/search/subject/{query}?type=2",
                         headers=headers,
-                        timeout=60,
+                        timeout=TIMEOUT_DB_SEARCH,
                     )
                     res.raise_for_status()
                     items = res.json().get("list", [])
@@ -696,7 +697,7 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                             "query": user_input,
                             "language": "zh-CN",
                         },
-                        timeout=60,
+                        timeout=TIMEOUT_DB_SEARCH,
                     )
                     res_tv.raise_for_status()
                     tv_results = res_tv.json().get("results", [])[:3]
@@ -718,7 +719,7 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                             "query": user_input,
                             "language": "zh-CN",
                         },
-                        timeout=60,
+                        timeout=TIMEOUT_DB_SEARCH,
                     )
                     res_movie.raise_for_status()
                     movie_results = res_movie.json().get("results", [])[:2]
@@ -849,9 +850,9 @@ def confirm_season_and_dispatch(gui, selected_ids, title, tid, msg, meta, dialog
 
     matching_indices = []
     for i, it in enumerate(gui.file_list):
-        if it["id"] in selected_ids:
+        if it.id in selected_ids:
             matching_indices.append(i)
-            path_key = it["path"]
+            path_key = it.path
             with gui.cache_lock:
                 gui.manual_locks[path_key] = (title, tid, msg, meta)
                 gui.forced_seasons[path_key] = new_s

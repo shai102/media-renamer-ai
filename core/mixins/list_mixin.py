@@ -4,6 +4,7 @@ import tkinter as tk
 
 from tkinter import filedialog
 
+from core.models.media_item import MediaItem
 from utils.helpers import clear_api_cache_file
 
 
@@ -34,21 +35,20 @@ class ListMixin:
         if not os.path.exists(path):
             return
 
-        if any(x["path"] == path for x in self.file_list):
+        if any(x.path == path for x in self.file_list):
             return
 
         _, ext = self.extract_lang_and_ext(os.path.basename(path))
         tid = self.tree.insert("", tk.END, values=(os.path.basename(path), "", "", "", "待命"))
 
         self.file_list.append(
-            {
-                "id": tid,
-                "path": path,
-                "dir": os.path.dirname(path),
-                "old_name": os.path.basename(path),
-                "ext": ext,
-                "metadata": {"id": "None"},
-            }
+            MediaItem(
+                id=tid,
+                path=path,
+                dir=os.path.dirname(path),
+                old_name=os.path.basename(path),
+                ext=ext,
+            )
         )
 
     def clear_list(self):
@@ -89,14 +89,14 @@ class ListMixin:
             return False
 
         idx = next(
-            (i for i, it in enumerate(self.file_list) if it.get("id") == row_id),
+            (i for i, it in enumerate(self.file_list) if it.id == row_id),
             None,
         )
         if idx is None:
             return False
 
         removed = self.file_list.pop(idx)
-        path_key = removed.get("path", "")
+        path_key = removed.path
 
         if self.tree.exists(row_id):
             self.tree.delete(row_id)

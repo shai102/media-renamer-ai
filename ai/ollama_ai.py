@@ -10,6 +10,8 @@ from utils.helpers import (
     ERROR_CODE_PARSE,
     ERROR_CODE_TIMEOUT,
     ERROR_CODE_UNKNOWN,
+    TIMEOUT_AI_CHAT,
+    TIMEOUT_AI_TEST,
     format_error_message,
     session,
 )
@@ -182,7 +184,9 @@ def fetch_siliconflow_info(
     }
 
     try:
-        response = session.post(url, json=payload, headers=headers, timeout=60)
+        response = session.post(
+            url, json=payload, headers=headers, timeout=TIMEOUT_AI_CHAT
+        )
         response.raise_for_status()
 
         try:
@@ -295,7 +299,9 @@ def test_silicon_api(api_url, api_key, model_name):
     }
 
     try:
-        response = session.post(url, json=payload, headers=headers, timeout=60)
+        response = session.post(
+            url, json=payload, headers=headers, timeout=TIMEOUT_AI_TEST
+        )
         response.raise_for_status()
 
         try:
@@ -311,7 +317,7 @@ def test_silicon_api(api_url, api_key, model_name):
             return False, f"响应结构异常: {err}"
 
     except requests.exceptions.Timeout:
-        return False, "请求超时 (60秒)"
+        return False, "请求超时"
     except requests.exceptions.HTTPError as err:
         status = getattr(err.response, "status_code", "未知")
         snippet = _response_body_snippet(getattr(err, "response", None))

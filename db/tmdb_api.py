@@ -19,6 +19,8 @@ from utils.helpers import (
     format_error_message,
     get_cache_key,
     session,
+    TIMEOUT_DB_DETAIL,
+    TIMEOUT_DB_SEARCH,
 )
 
 
@@ -42,7 +44,9 @@ def fetch_bgm_by_id_raw(subject_id, api_key=""):
 
     try:
         response = session.get(
-            f"https://api.bgm.tv/v0/subjects/{subject_id}", headers=headers, timeout=60
+            f"https://api.bgm.tv/v0/subjects/{subject_id}",
+            headers=headers,
+            timeout=TIMEOUT_DB_DETAIL,
         )
         response.raise_for_status()
         data = response.json()
@@ -107,7 +111,9 @@ def fetch_bgm_candidates_raw(title, api_key=""):
 
     try:
         response = session.get(
-            f"https://api.bgm.tv/search/subject/{q}?type=2", headers=headers, timeout=60
+            f"https://api.bgm.tv/search/subject/{q}?type=2",
+            headers=headers,
+            timeout=TIMEOUT_DB_SEARCH,
         )
         response.raise_for_status()
         data = response.json().get("list", [])
@@ -193,7 +199,7 @@ def fetch_bgm_episode_raw(subject_id, season, episode, api_key_bgm):
         response = session.get(
             f"https://api.bgm.tv/v0/episodes?subject_id={subject_id}&type=0&limit=100",
             headers=headers,
-            timeout=60,
+            timeout=TIMEOUT_DB_DETAIL,
         )
         response.raise_for_status()
 
@@ -232,7 +238,7 @@ def fetch_tmdb_by_id_raw(tmdb_id, is_tv=True, api_key=""):
         response = session.get(
             f"https://api.themoviedb.org/3/{stype}/{tmdb_id}",
             params={"api_key": api_key.strip(), "language": "zh-CN"},
-            timeout=60,
+            timeout=TIMEOUT_DB_DETAIL,
         )
         response.raise_for_status()
         data = response.json()
@@ -342,7 +348,9 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
             elif year_mode == "first_air_date_year":
                 params["first_air_date_year"] = year
         response = session.get(
-            f"https://api.themoviedb.org/3/search/{stype}", params=params, timeout=60
+            f"https://api.themoviedb.org/3/search/{stype}",
+            params=params,
+            timeout=TIMEOUT_DB_SEARCH,
         )
         response.raise_for_status()
         return response.json().get("results", [])
@@ -469,7 +477,7 @@ def fetch_tmdb_episode_meta_raw(
         response = session.get(
             f"https://api.themoviedb.org/3/tv/{tv_id}/season/{season}/episode/{episode}",
             params={"api_key": api_key.strip(), "language": "zh-CN"},
-            timeout=60,
+            timeout=TIMEOUT_DB_DETAIL,
         )
         response.raise_for_status()
         data = response.json()
@@ -482,7 +490,7 @@ def fetch_tmdb_episode_meta_raw(
             response_en = session.get(
                 f"https://api.themoviedb.org/3/tv/{tv_id}/season/{season}/episode/{episode}",
                 params={"api_key": api_key.strip(), "language": "en-US"},
-                timeout=60,
+                timeout=TIMEOUT_DB_DETAIL,
             )
             response_en.raise_for_status()
             data_en = response_en.json()
@@ -550,7 +558,7 @@ def fetch_tmdb_season_poster_raw(tv_id, season, api_key):
         response = session.get(
             f"https://api.themoviedb.org/3/tv/{tv_id}/season/{season}",
             params={"api_key": api_key.strip(), "language": "zh-CN"},
-            timeout=60,
+            timeout=TIMEOUT_DB_DETAIL,
         )
         response.raise_for_status()
         return response.json().get("poster_path", "")
@@ -587,7 +595,7 @@ def fetch_hybrid_episode_meta(
                     "query": q_tmdb,
                     "language": "zh-CN",
                 },
-                timeout=60,
+                timeout=TIMEOUT_DB_SEARCH,
             )
             response.raise_for_status()
             results = response.json().get("results", [])
@@ -613,7 +621,7 @@ def fetch_hybrid_episode_meta(
                 ep_s_res = session.get(
                     f"https://api.themoviedb.org/3/tv/{tm_id}/season/{s}/episode/{e}",
                     params={"api_key": api_key_tmdb.strip(), "language": "zh-CN"},
-                    timeout=60,
+                    timeout=TIMEOUT_DB_DETAIL,
                 )
                 if ep_s_res.status_code == 200:
                     ep_s = ep_s_res.json().get("still_path", "")
@@ -621,7 +629,7 @@ def fetch_hybrid_episode_meta(
                 s_p_res = session.get(
                     f"https://api.themoviedb.org/3/tv/{tm_id}/season/{s}",
                     params={"api_key": api_key_tmdb.strip(), "language": "zh-CN"},
-                    timeout=60,
+                    timeout=TIMEOUT_DB_DETAIL,
                 )
                 if s_p_res.status_code == 200:
                     s_p = s_p_res.json().get("poster_path", "")

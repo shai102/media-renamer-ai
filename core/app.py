@@ -46,6 +46,7 @@ from core.services.naming_service import (
 )
 from core.mixins.config_mixin import ConfigMixin
 from core.mixins.list_mixin import ListMixin
+from core.models.media_item import MediaItem
 from core.ui.manual_match import (
     async_manual_match_search as ui_async_manual_match_search,
     confirm_season_and_dispatch as ui_confirm_season_and_dispatch,
@@ -107,10 +108,10 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v1.7")
+        self.root.title("媒体归档刮削助手 v1.8")
         self.root.geometry("1300x900")
 
-        self.file_list = []
+        self.file_list: list[MediaItem] = []
         self.dir_cache = {}
         self.db_cache = {}
         self.manual_locks = {}
@@ -231,10 +232,10 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         """在媒体文件已位于目标位置后写入 NFO 与图片。"""
         with self.file_write_lock:
             target_dir = os.path.dirname(target_path)
-            m = item.get("metadata", {})
+            m = item.metadata or {}
             media_type = m.get("type", "episode")
             is_tv = media_type == "episode"
-            is_sub_audio = item["old_name"].lower().endswith(self.get_sub_audio_exts())
+            is_sub_audio = item.old_name.lower().endswith(self.get_sub_audio_exts())
 
             if is_tv:
                 if not is_sub_audio:
@@ -1052,7 +1053,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
         # 检查元数据
         for item in self.file_list:
-            if "metadata" not in item or item["metadata"].get("id") == "None":
+            if item.metadata.get("id") == "None":
                 messagebox.showwarning(
                     "缺少元数据",
                     "请先执行【高速识别预览】后再进行重命名操作。",
@@ -1070,7 +1071,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             return
 
         for item in self.file_list:
-            if "metadata" not in item or item["metadata"].get("id") == "None":
+            if item.metadata.get("id") == "None":
                 messagebox.showwarning(
                     "缺少元数据",
                     "请先执行【高速识别预览】后再进行刮削操作。",

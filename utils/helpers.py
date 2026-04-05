@@ -1,3 +1,4 @@
+import atexit
 import json
 import logging
 import os
@@ -15,6 +16,17 @@ USER_AGENT = "MyMediaRenamer/73.0 (Fully Customizable Edition)"
 CONFIG_FILE = "renamer_config.json"
 CACHE_FILE = "api_cache.json"
 CACHE_EXPIRY_DAYS = 7
+CACHE_FLUSH_INTERVAL_SECONDS = 8
+CACHE_FLUSH_MAX_WRITES = 20
+
+TIMEOUT_IMAGE_DOWNLOAD = (6, 25)
+TIMEOUT_DB_SEARCH = (6, 20)
+TIMEOUT_DB_DETAIL = (8, 25)
+TIMEOUT_AI_CHAT = (10, 50)
+TIMEOUT_AI_TEST = (8, 25)
+TIMEOUT_OLLAMA_TAGS = (4, 12)
+TIMEOUT_OLLAMA_CHAT = (8, 45)
+TIMEOUT_OLLAMA_EMBED = (8, 30)
 
 DEFAULT_TV_FORMAT = "{title} - S{s:02d}E{e:02d} - {ep_name}{ext}"
 DEFAULT_MOVIE_FORMAT = "{title} ({year}){ext}"
@@ -66,6 +78,10 @@ ERROR_CODES = {
 }
 
 _cache_file_lock = threading.Lock()
+_cache_data = None
+_cache_dirty = False
+_cache_write_count = 0
+_cache_last_flush_ts = 0.0
 
 
 def format_error_message(code, message):
@@ -111,7 +127,7 @@ def create_retry_session(
         total=retries,
         backoff_factor=backoff_factor,
         status_forcelist=status_forcelist,
-        allowed_methods=["GET", "POST"],
+        allowed_methods=["GET"],
     )
     adapter = HTTPAdapter(max_retries=retry_strategy)
     req_session.mount("https://", adapter)
@@ -308,9 +324,15 @@ def derive_title_from_filename(pure_name):
 
 
 def build_query_titles(item, query_title, ai_data, g):
-    raw_name = item.get("old_name", "")
+    if isinstance(item, dict):
+        raw_name = item.get("old_name", "")
+        item_dir = item.get("dir", "") or ""
+    else:
+        raw_name = getattr(item, "old_name", "") or ""
+        item_dir = getattr(item, "dir", "") or ""
+
     pure, _ = os.path.splitext(raw_name)
-    dir_title = os.path.basename(item.get("dir", "") or "")
+    dir_title = os.path.basename(item_dir)
     guess_title = clean_search_title((g.get("title") if g else None) or "")
     candidates = [
         query_title,
@@ -350,34 +372,72 @@ def safe_int(value, default=1):
 
 
 def load_cache():
-    if os.path.exists(CACHE_FILE):
-        try:
-            for encoding in ["utf-8", "gbk", "latin-1"]:
-                try:
-                    with open(CACHE_FILE, "r", encoding=encoding) as f:
-                        cache = json.load(f)
-                    break
-                except UnicodeDecodeError:
-                    continue
-            else:
-                with open(CACHE_FILE, "rb") as f:
-                    content = f.read().decode("utf-8", errors="ignore")
-                cache = json.loads(content)
+    with _cache_file_lock:
+        _ensure_cache_loaded_unlocked()
+        _prune_expired_cache_entries(_cache_data)
+        return dict(_cache_data)
 
-            now = datetime.now().timestamp()
-            expired_keys = []
-            for key in cache.keys():
-                if cache[key].get("expiry", 0) < now:
-                    expired_keys.append(key)
 
-            for key in expired_keys:
-                del cache[key]
+def _load_cache_from_disk():
+    if not os.path.exists(CACHE_FILE):
+        return {}
 
-            return cache
-        except Exception as err:
-            logging.error(f"加载缓存失败: {err}")
-            return {}
-    return {}
+    try:
+        for encoding in ["utf-8", "gbk", "latin-1"]:
+            try:
+                with open(CACHE_FILE, "r", encoding=encoding) as f:
+                    cache = json.load(f)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            with open(CACHE_FILE, "rb") as f:
+                content = f.read().decode("utf-8", errors="ignore")
+            cache = json.loads(content)
+        return cache if isinstance(cache, dict) else {}
+    except Exception as err:
+        logging.error(f"加载缓存失败: {err}")
+        return {}
+
+
+def _prune_expired_cache_entries(cache, now_ts=None):
+    now_value = now_ts or datetime.now().timestamp()
+    expired_keys = [
+        key
+        for key, value in list((cache or {}).items())
+        if not isinstance(value, dict) or value.get("expiry", 0) < now_value
+    ]
+    for key in expired_keys:
+        cache.pop(key, None)
+    return len(expired_keys)
+
+
+def _ensure_cache_loaded_unlocked():
+    global _cache_data
+    if _cache_data is None:
+        _cache_data = _load_cache_from_disk()
+
+
+def _flush_cache_to_disk_unlocked(force=False):
+    global _cache_dirty, _cache_last_flush_ts, _cache_write_count
+    if not _cache_dirty:
+        return False
+
+    now_ts = datetime.now().timestamp()
+    should_flush = force
+    if not should_flush:
+        should_flush = (
+            _cache_write_count >= CACHE_FLUSH_MAX_WRITES
+            or now_ts - _cache_last_flush_ts >= CACHE_FLUSH_INTERVAL_SECONDS
+        )
+    if not should_flush:
+        return False
+
+    save_cache(_cache_data or {})
+    _cache_dirty = False
+    _cache_write_count = 0
+    _cache_last_flush_ts = now_ts
+    return True
 
 
 def save_cache(cache):
@@ -400,8 +460,13 @@ def save_cache(cache):
 
 def clear_api_cache_file():
     """Delete persistent API cache on disk in a thread-safe way."""
+    global _cache_data, _cache_dirty, _cache_write_count, _cache_last_flush_ts
     with _cache_file_lock:
         try:
+            _cache_data = {}
+            _cache_dirty = False
+            _cache_write_count = 0
+            _cache_last_flush_ts = 0.0
             if os.path.exists(CACHE_FILE):
                 os.remove(CACHE_FILE)
             return True
@@ -415,10 +480,19 @@ def get_cache_key(api_name, query):
 
 
 def cached_request(api_func, cache_key, *args, **kwargs):
+    global _cache_dirty, _cache_write_count
+    now_ts = datetime.now().timestamp()
+
     with _cache_file_lock:
-        cache = load_cache()
-        if cache_key in cache:
-            return cache[cache_key]["data"]
+        _ensure_cache_loaded_unlocked()
+        expired_count = _prune_expired_cache_entries(_cache_data, now_ts)
+        if expired_count > 0:
+            _cache_dirty = True
+            _flush_cache_to_disk_unlocked(force=False)
+
+        cached_entry = (_cache_data or {}).get(cache_key)
+        if isinstance(cached_entry, dict) and cached_entry.get("expiry", 0) >= now_ts:
+            return cached_entry.get("data")
 
     result = api_func(*args, **kwargs)
 
@@ -437,16 +511,24 @@ def cached_request(api_func, cache_key, *args, **kwargs):
 
     if is_valid:
         with _cache_file_lock:
-            cache = load_cache()
-            cache[cache_key] = {
+            _ensure_cache_loaded_unlocked()
+            _cache_data[cache_key] = {
                 "data": result,
                 "expiry": (
                     datetime.now() + timedelta(days=CACHE_EXPIRY_DAYS)
                 ).timestamp(),
             }
-            save_cache(cache)
+            _cache_dirty = True
+            _cache_write_count += 1
+            _flush_cache_to_disk_unlocked(force=False)
 
     return result
+
+
+def flush_api_cache(force=False):
+    with _cache_file_lock:
+        _ensure_cache_loaded_unlocked()
+        return _flush_cache_to_disk_unlocked(force=force)
 
 
 def save_image(path, url_part):
@@ -462,7 +544,11 @@ def save_image(path, url_part):
         if os.path.exists(path):
             return
 
-        res = session.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=60)
+        res = session.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=TIMEOUT_IMAGE_DOWNLOAD,
+        )
         if res.status_code == 200:
             with open(path, "wb") as f:
                 f.write(res.content)
@@ -513,3 +599,6 @@ def write_nfo(path, data, nfo_type="movie"):
             f.write(pretty_xml)
     except Exception as err:
         logging.error(f"写入NFO失败 {path}: {err}")
+
+
+atexit.register(lambda: flush_api_cache(force=True))
