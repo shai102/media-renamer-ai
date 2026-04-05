@@ -12,3 +12,4 @@ renamer_config.json
 api_cache.json
 media_renamer.log
 *.rar
+dist/
