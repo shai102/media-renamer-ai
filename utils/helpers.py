@@ -599,6 +599,44 @@ def write_nfo(path, data, nfo_type="movie"):
             ET.SubElement(root, "year").text = str(data.get("year") or "")
             ET.SubElement(root, "dateadded").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+            release = str(data.get("release") or "")
+            if release:
+                ET.SubElement(root, "premiered").text = release
+                ET.SubElement(root, "aired").text = release
+
+            rating = data.get("rating") or 0
+            if rating:
+                rating_el = ET.SubElement(root, "ratings")
+                r_el = ET.SubElement(rating_el, "rating", name="tmdb", max="10", default="true")
+                ET.SubElement(r_el, "value").text = f"{float(rating):.1f}"
+                votes = data.get("votes") or 0
+                if votes:
+                    ET.SubElement(r_el, "votes").text = str(int(votes))
+
+            runtime = data.get("runtime")
+            if runtime:
+                ET.SubElement(root, "runtime").text = str(int(runtime))
+
+            status = str(data.get("status") or "")
+            if status:
+                ET.SubElement(root, "status").text = status
+
+            for genre in (data.get("genres") or []):
+                ET.SubElement(root, "genre").text = str(genre)
+
+            for studio in (data.get("studios") or []):
+                ET.SubElement(root, "studio").text = str(studio)
+
+            for director in (data.get("directors") or []):
+                ET.SubElement(root, "director").text = str(director)
+
+            for actor in (data.get("actors") or []):
+                actor_el = ET.SubElement(root, "actor")
+                ET.SubElement(actor_el, "name").text = str(actor.get("name", ""))
+                ET.SubElement(actor_el, "role").text = str(actor.get("role", ""))
+                if actor.get("thumb"):
+                    ET.SubElement(actor_el, "thumb").text = str(actor["thumb"])
+
         provider = str(data.get("provider") or "tmdb").strip().lower() or "tmdb"
         ET.SubElement(root, "lockdata").text = "false"
         ET.SubElement(root, "uniqueid", type=provider).text = str(data.get("id", ""))

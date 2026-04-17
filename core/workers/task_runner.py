@@ -13,6 +13,7 @@ from db.tmdb_api import (
     fetch_bgm_by_id,
     fetch_hybrid_episode_meta,
     fetch_tmdb_by_id,
+    fetch_tmdb_credits,
     fetch_tmdb_episode_meta,
     fetch_tmdb_season_poster,
 )
@@ -61,6 +62,14 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
     """Update single row metadata and naming in background sync flow."""
     item = None
     try:
+        # 搜索路径返回的 meta 可能缺少 genres/runtime/status，用 detail 接口补全
+        mode = gui.source_var.get()
+        if mode == "siliconflow_tmdb" and t_id and t_id != "None" and not meta.get("genres"):
+            _, _, _, detail_meta = fetch_tmdb_by_id(t_id, True, gui.tmdb_api_key.get())
+            if not detail_meta:
+                _, _, _, detail_meta = fetch_tmdb_by_id(t_id, False, gui.tmdb_api_key.get())
+            if detail_meta:
+                meta = {**detail_meta, **{k: v for k, v in meta.items() if v}}
         item = gui.file_list[idx]
         pure, ext = gui.extract_lang_and_ext(item.old_name)
         g = guessit(pure)
@@ -146,6 +155,12 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
         new_fn = re.sub(r"\s*-\s*(?=\.)|\s*-\s*$", "", new_fn)
         new_fn = re.sub(r"\s+(?=\.)", "", new_fn).strip()
 
+        actors, directors = [], []
+        if mode == "siliconflow_tmdb" and t_id and t_id != "None":
+            actors, directors = fetch_tmdb_credits(
+                t_id, is_tv=is_tv, api_key=gui.tmdb_api_key.get()
+            )
+
         item.metadata = {
             "id": t_id,
             "provider": "tmdb" if mode == "siliconflow_tmdb" else "bgm",
@@ -161,6 +176,16 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
             "still": ep_s,
             "s_poster": s_p,
             "type": media_type,
+            "actors": actors,
+            "directors": directors,
+            "genres": meta.get("genres") or [],
+            "studios": meta.get("studios") or [],
+            "runtime": meta.get("runtime"),
+            "status": meta.get("status", ""),
+            "rating": meta.get("rating", 0),
+            "votes": meta.get("votes", 0),
+            "release": meta.get("release", ""),
+            "original_title": meta.get("original_title", ""),
         }
         item.new_name_only = new_fn
 
@@ -424,6 +449,13 @@ def process_task(gui, i):
             db_c = (t, "None", "待手动确认", {})
 
         std_t, tid, db_m, meta = db_c
+
+        # 搜索路径返回的 meta 缺少 genres/runtime/status/studios，用 detail 接口补全
+        if mode == "siliconflow_tmdb" and tid and tid != "None" and not meta.get("genres"):
+            _, _, _, detail_meta = fetch_tmdb_by_id(tid, is_tv, gui.tmdb_api_key.get())
+            if detail_meta:
+                meta = {**detail_meta, **{k: v for k, v in meta.items() if v}}
+
         ep_n, ep_p, ep_s, s_p = "", "", "", ""
 
         if is_tv and tid != "None":
@@ -485,6 +517,12 @@ def process_task(gui, i):
         new_fn = re.sub(r"\s*-\s*(?=\.)|\s*-\s*$", "", new_fn)
         new_fn = re.sub(r"\s+(?=\.)", "", new_fn).strip()
 
+        actors, directors = [], []
+        if mode == "siliconflow_tmdb" and tid and tid != "None":
+            actors, directors = fetch_tmdb_credits(
+                tid, is_tv=is_tv, api_key=gui.tmdb_api_key.get()
+            )
+
         item.metadata = {
             "id": tid,
             "provider": "tmdb" if mode == "siliconflow_tmdb" else "bgm",
@@ -500,6 +538,16 @@ def process_task(gui, i):
             "still": ep_s,
             "s_poster": s_p,
             "type": media_type,
+            "actors": actors,
+            "directors": directors,
+            "genres": meta.get("genres") or [],
+            "studios": meta.get("studios") or [],
+            "runtime": meta.get("runtime"),
+            "status": meta.get("status", ""),
+            "rating": meta.get("rating", 0),
+            "votes": meta.get("votes", 0),
+            "release": meta.get("release", ""),
+            "original_title": meta.get("original_title", ""),
         }
 
         item.new_name_only = new_fn

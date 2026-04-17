@@ -344,10 +344,18 @@ def fetch_tmdb_by_id_raw(tmdb_id, is_tv=True, api_key=""):
         meta = {
             "overview": data.get("overview", ""),
             "rating": data.get("vote_average", 0),
+            "votes": data.get("vote_count", 0),
             "poster": data.get("poster_path", ""),
             "fanart": data.get("backdrop_path", ""),
             "release": data.get("first_air_date") or data.get("release_date") or "",
             "original_title": data.get("original_name") or data.get("original_title") or "",
+            "genres": [g["name"] for g in (data.get("genres") or []) if g.get("name")],
+            "studios": [
+                n["name"] for n in (data.get("networks") or data.get("production_companies") or [])
+                if n.get("name")
+            ],
+            "runtime": (data.get("episode_run_time") or [None])[0] if is_tv else data.get("runtime"),
+            "status": data.get("status", ""),
         }
 
         # zh-CN 简介为空时补请英文版本
@@ -796,4 +804,63 @@ def fetch_hybrid_episode_meta(
         api_key_bgm,
         api_key_tmdb,
         year,
+    )
+
+
+def fetch_tmdb_credits_raw(tmdb_id, is_tv=True, api_key=""):
+    """从 TMDB 获取演职人员信息，返回 (actors, directors) 两个列表。
+
+    actors: [{"name": ..., "role": ..., "thumb": ...}, ...]  最多 20 人
+    directors: ["导演名", ...]
+    """
+    if not tmdb_id or tmdb_id == "None" or not api_key.strip():
+        return [], []
+
+    stype = "tv" if is_tv else "movie"
+    try:
+        resp = _tmdb_get(
+            f"https://api.themoviedb.org/3/{stype}/{tmdb_id}/credits",
+            params={"api_key": api_key.strip(), "language": "zh-CN"},
+            timeout=TIMEOUT_DB_DETAIL,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        cast = data.get("cast") or []
+        crew = data.get("crew") or []
+
+        actors = []
+        for p in cast[:20]:
+            name = p.get("name") or ""
+            role = p.get("character") or ""
+            thumb = p.get("profile_path") or ""
+            if thumb:
+                thumb = f"https://image.tmdb.org/t/p/w185{thumb}"
+            if name:
+                actors.append({"name": name, "role": role, "thumb": thumb})
+
+        directors = [
+            p.get("name") for p in crew
+            if p.get("job") == "Director" and p.get("name")
+        ]
+        # TV 剧没有 movie Director，退而用 creator
+        if is_tv and not directors:
+            directors = [
+                p.get("name") for p in (data.get("created_by") or [])
+                if p.get("name")
+            ]
+
+        return actors, directors
+    except Exception as err:
+        logging.warning(f"TMDB credits 获取失败 ({tmdb_id}): {err}")
+        return [], []
+
+
+def fetch_tmdb_credits(tmdb_id, is_tv=True, api_key=""):
+    return cached_request(
+        fetch_tmdb_credits_raw,
+        get_cache_key("tmdb_credits_v1", f"{tmdb_id}_{is_tv}"),
+        tmdb_id,
+        is_tv,
+        api_key,
     )
