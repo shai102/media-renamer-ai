@@ -10,7 +10,9 @@ from guessit import guessit
 
 from ai.ollama_ai import fetch_siliconflow_info
 from db.tmdb_api import (
+    fetch_bgm_by_id,
     fetch_hybrid_episode_meta,
+    fetch_tmdb_by_id,
     fetch_tmdb_episode_meta,
     fetch_tmdb_season_poster,
 )
@@ -23,6 +25,7 @@ from core.workers.execution_runner import (
 from utils.helpers import (
     ERROR_CODE_UNKNOWN,
     derive_title_from_filename,
+    extract_db_id_from_path,
     extract_episode_number,
     format_error_message,
     normalize_compare_text,
@@ -245,7 +248,7 @@ def process_task(gui, i):
     item = gui.file_list[i]
 
     try:
-        if gui.preview_skip_all_event.is_set():
+        if gui.preview_skip_all_event.is_set() or item.dir in gui.preview_skip_dirs:
             gui.root.after(
                 0, lambda id_val=item.id: gui.tree.set(id_val, "st", "已跳过")
             )
@@ -255,7 +258,7 @@ def process_task(gui, i):
             0, lambda id_val=item.id: gui.tree.set(id_val, "st", "识别中")
         )
 
-        if gui.preview_skip_all_event.is_set():
+        if gui.preview_skip_all_event.is_set() or item.dir in gui.preview_skip_dirs:
             gui.root.after(
                 0, lambda id_val=item.id: gui.tree.set(id_val, "st", "已跳过")
             )
@@ -340,12 +343,16 @@ def process_task(gui, i):
                             }
 
         if SPECIAL_TAG_RE.search(pure):
-            s = 0
-            sp_match = SPECIAL_EPISODE_RE.search(pure)
-            if sp_match:
-                e = int(sp_match.group(1))
-            elif PROLOGUE_RE.search(pure):
-                e = 0
+            # 若文件名已有显式 S\d+E\d+ 标记（如 S01E01），尊重该标记，
+            # 不强制覆盖为 Season 0，避免把 OVA 系列误归入特别篇。
+            explicit_s_in_name = gui._extract_explicit_season(pure)
+            if explicit_s_in_name is None:
+                s = 0
+                sp_match = SPECIAL_EPISODE_RE.search(pure)
+                if sp_match:
+                    e = int(sp_match.group(1))
+                elif PROLOGUE_RE.search(pure):
+                    e = 0
 
         media_type = gui._resolve_media_type(g)
         is_tv = media_type == "episode"
@@ -381,7 +388,24 @@ def process_task(gui, i):
         if not db_c:
             if is_resolver:
                 try:
-                    db_c = gui._resolve_db_match(item, t, y, is_tv, mode, ai_data, g)
+                    folder_id = extract_db_id_from_path(item.path, mode)
+                    if folder_id:
+                        if mode == "siliconflow_tmdb":
+                            _ft, _fid, _fm, _fmeta = fetch_tmdb_by_id(
+                                folder_id, is_tv, gui.tmdb_api_key.get()
+                            )
+                            if _fid == "None":
+                                _ft, _fid, _fm, _fmeta = fetch_tmdb_by_id(
+                                    folder_id, not is_tv, gui.tmdb_api_key.get()
+                                )
+                        else:
+                            _ft, _fid, _fm, _fmeta = fetch_bgm_by_id(
+                                folder_id, gui.bgm_api_key.get()
+                            )
+                        if _fid != "None":
+                            db_c = (_ft, _fid, "文件夹ID锁定", _fmeta)
+                    if not db_c:
+                        db_c = gui._resolve_db_match(item, t, y, is_tv, mode, ai_data, g)
                     with gui.cache_lock:
                         if db_c and len(db_c) >= 2 and db_c[1] != "None":
                             gui.db_cache[cache_key] = db_c

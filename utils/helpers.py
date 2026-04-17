@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import threading
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from xml.dom import minidom
@@ -19,7 +20,7 @@ CACHE_EXPIRY_DAYS = 7
 CACHE_FLUSH_INTERVAL_SECONDS = 8
 CACHE_FLUSH_MAX_WRITES = 20
 
-TIMEOUT_IMAGE_DOWNLOAD = (6, 25)
+TIMEOUT_IMAGE_DOWNLOAD = (10, 30)
 TIMEOUT_DB_SEARCH = (6, 20)
 TIMEOUT_DB_DETAIL = (8, 25)
 TIMEOUT_AI_CHAT = (10, 50)
@@ -136,6 +137,9 @@ def create_retry_session(
 
 
 session = create_retry_session()
+
+# 限制同时发起的图片下载并发数，防止 TMDB CDN 触发限速(10054)
+_image_semaphore = threading.Semaphore(2)
 
 
 def safe_filename(text):
@@ -544,14 +548,19 @@ def save_image(path, url_part):
         if os.path.exists(path):
             return
 
-        res = session.get(
-            url,
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=TIMEOUT_IMAGE_DOWNLOAD,
-        )
-        if res.status_code == 200:
-            with open(path, "wb") as f:
-                f.write(res.content)
+        with _image_semaphore:
+            time.sleep(0.3)  # 限速间隔，避免并发请求触发 TMDB CDN 的 10054 RST
+            res = session.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=TIMEOUT_IMAGE_DOWNLOAD,
+                stream=True,
+            )
+            if res.status_code == 200:
+                with open(path, "wb") as f:
+                    for chunk in res.iter_content(chunk_size=65536):
+                        if chunk:
+                            f.write(chunk)
     except Exception as err:
         logging.error(f"保存图片失败 {path}: {err}")
 
@@ -581,8 +590,14 @@ def write_nfo(path, data, nfo_type="movie"):
 
         else:
             ET.SubElement(root, "title").text = str(data.get("title", ""))
-            ET.SubElement(root, "plot").text = str(data.get("overview", ""))
+            overview = str(data.get("overview", ""))
+            ET.SubElement(root, "plot").text = overview
+            ET.SubElement(root, "outline").text = overview
+            orig_title = str(data.get("original_title", ""))
+            if orig_title:
+                ET.SubElement(root, "originaltitle").text = orig_title
             ET.SubElement(root, "year").text = str(data.get("year") or "")
+            ET.SubElement(root, "dateadded").text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         provider = str(data.get("provider") or "tmdb").strip().lower() or "tmdb"
         ET.SubElement(root, "lockdata").text = "false"
@@ -601,4 +616,31 @@ def write_nfo(path, data, nfo_type="movie"):
         logging.error(f"写入NFO失败 {path}: {err}")
 
 
+def _nfo_has_empty_plot(path):
+    """Return True if the NFO file exists but has an empty <plot> element."""
+    try:
+        tree = ET.parse(path)
+        plot = tree.find("plot")
+        return plot is None or not (plot.text or "").strip()
+    except Exception:
+        return False
+
+
 atexit.register(lambda: flush_api_cache(force=True))
+
+_FOLDER_TMDBID_RE = re.compile(r"(?i)tmdb(?:id)?[-=:_](\d{1,8})")
+_FOLDER_BGMID_RE = re.compile(r"(?i)bgm(?:id)?[-=:_](\d{1,8})")
+
+
+def extract_db_id_from_path(path, mode):
+    """从路径的目录部分提取 tmdbid 或 bgmid。
+
+    支持格式：(tmdbid-259537) [tmdbid=259537] {tmdbid-259537} tmdb-259537 等。
+    仅检测文件夹名，不检测文件名本身。
+    mode: 'siliconflow_tmdb' 或 'siliconflow_bgm'
+    返回: id 字符串 或 None
+    """
+    dir_part = os.path.dirname(str(path or ""))
+    pat = _FOLDER_TMDBID_RE if mode == "siliconflow_tmdb" else _FOLDER_BGMID_RE
+    m = pat.search(dir_part)
+    return m.group(1) if m else None

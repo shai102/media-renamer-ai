@@ -48,6 +48,9 @@ def _extract_siliconflow_content(payload):
         raise ValueError("AI响应缺少message")
 
     content = message.get("content")
+    # Qwen3 思考模式下 content 为空，回复在 reasoning_content 里
+    if not isinstance(content, str) or not content.strip():
+        content = message.get("reasoning_content") or ""
     if not isinstance(content, str) or not content.strip():
         raise ValueError("AI响应content为空")
 
@@ -181,6 +184,7 @@ def fetch_siliconflow_info(
         "temperature": _normalize_temperature(temperature),
         "top_p": _normalize_top_p(top_p),
         "max_tokens": 500,
+        "enable_thinking": False,
     }
 
     try:
@@ -296,6 +300,7 @@ def test_silicon_api(api_url, api_key, model_name):
         "model": model,
         "messages": [{"role": "user", "content": "Hi"}],
         "max_tokens": 10,
+        "enable_thinking": False,
     }
 
     try:

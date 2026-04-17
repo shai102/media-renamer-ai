@@ -1,5 +1,7 @@
 import logging
 import re
+import threading
+import time
 import difflib
 
 import requests
@@ -22,6 +24,43 @@ from utils.helpers import (
     TIMEOUT_DB_DETAIL,
     TIMEOUT_DB_SEARCH,
 )
+
+# ---------------------------------------------------------------------------
+# TMDB API 全局限速器
+# TMDB 官方速率限制约 40 请求/10 秒（即 4 req/s）。
+# 用一个令牌桶：最多积累 8 个令牌，每 0.25s 补充 1 个。
+# 所有向 api.themoviedb.org 发出的请求都通过 _tmdb_throttle() 限速。
+# ---------------------------------------------------------------------------
+_tmdb_lock = threading.Lock()
+_tmdb_tokens = 8.0          # 初始令牌数（允许冷启动时短暂突发）
+_tmdb_max_tokens = 8.0
+_tmdb_refill_rate = 4.0     # 每秒补充令牌数（对应 TMDB 4 req/s 限制）
+_tmdb_last_refill = time.monotonic()
+
+
+def _tmdb_throttle():
+    """消耗一个 TMDB 令牌；令牌耗尽时阻塞直到补充。"""
+    global _tmdb_tokens, _tmdb_last_refill
+    while True:
+        with _tmdb_lock:
+            now = time.monotonic()
+            elapsed = now - _tmdb_last_refill
+            _tmdb_tokens = min(
+                _tmdb_max_tokens,
+                _tmdb_tokens + elapsed * _tmdb_refill_rate,
+            )
+            _tmdb_last_refill = now
+            if _tmdb_tokens >= 1.0:
+                _tmdb_tokens -= 1.0
+                return
+        # 令牌不足，等待约半个补充周期后重试
+        time.sleep(0.15)
+
+
+def _tmdb_get(url, **kwargs):
+    """对 api.themoviedb.org 所有 GET 请求的统一入口，自动限速。"""
+    _tmdb_throttle()
+    return session.get(url, **kwargs)
 
 
 def _response_body_snippet(response, limit=300):
@@ -103,29 +142,21 @@ def fetch_bgm_by_id(subject_id, api_key=""):
     )
 
 
-def fetch_bgm_candidates_raw(title, api_key=""):
+def fetch_bgm_candidates_raw(title, year=None, api_key=""):
     q = clean_search_title(title)
+    q_norm = re.sub(r"[\W_]+", "", str(q).lower())
     headers = {"User-Agent": USER_AGENT}
     if api_key and api_key.strip():
         headers["Authorization"] = f"Bearer {api_key.strip()}"
 
-    try:
-        response = session.get(
-            f"https://api.bgm.tv/search/subject/{q}?type=2",
-            headers=headers,
-            timeout=TIMEOUT_DB_SEARCH,
-        )
-        response.raise_for_status()
-        data = response.json().get("list", [])
-
+    def _items_to_candidates(items):
         candidates = []
         seen_ids = set()
-        for item in data[:8]:
+        for item in items[:8]:
             cid = str(item.get("id") or "")
             if not cid or cid in seen_ids:
                 continue
             seen_ids.add(cid)
-
             release = item.get("air_date") or item.get("date") or ""
             rating = item.get("score", 0)
             meta = {
@@ -147,6 +178,72 @@ def fetch_bgm_candidates_raw(title, api_key=""):
                 }
             )
         return candidates
+
+    def _similarity_score(item):
+        name_cn = item.get("name_cn") or ""
+        name = item.get("name") or ""
+        name_cn_norm = re.sub(r"[\W_]+", "", str(name_cn).lower())
+        name_norm = re.sub(r"[\W_]+", "", str(name).lower())
+        scores = []
+        if name_cn_norm:
+            scores.append(difflib.SequenceMatcher(None, q_norm, name_cn_norm).ratio())
+        if name_norm:
+            scores.append(difflib.SequenceMatcher(None, q_norm, name_norm).ratio())
+        return max(scores) if scores else 0.0
+
+    def _request_bgm(query):
+        resp = session.get(
+            f"https://api.bgm.tv/search/subject/{query}?type=2",
+            headers=headers,
+            timeout=TIMEOUT_DB_SEARCH,
+        )
+        resp.raise_for_status()
+        return resp.json().get("list", [])
+
+    def _year_sort_key(cand):
+        if not year:
+            return 1
+        release = cand.get("release") or ""
+        return 0 if str(release).startswith(str(year)) else 1
+
+    try:
+        queries = [q]
+        q_retry = re.sub(r"(?i)HD|重制版|重製版|Remaster|Edition", "", q).strip()
+        if q_retry and q_retry != q:
+            queries.append(q_retry)
+
+        for query in queries:
+            results = _request_bgm(query)
+            if results:
+                candidates = _items_to_candidates(results)
+                candidates.sort(key=_year_sort_key)
+                return candidates
+
+        # Fuzzy fallback: 拆词后重排
+        token_queries = []
+        for token in re.split(r"\s+", q):
+            t = token.strip()
+            if len(t) >= 2 and t.lower() != q.lower() and t not in token_queries:
+                token_queries.append(t)
+
+        fuzzy_pool = []
+        seen = set()
+        for tq in token_queries:
+            for item in _request_bgm(tq):
+                cid = str(item.get("id") or "")
+                if not cid or cid in seen:
+                    continue
+                seen.add(cid)
+                fuzzy_pool.append(item)
+
+        if fuzzy_pool:
+            ranked = sorted(fuzzy_pool, key=_similarity_score, reverse=True)
+            top = [it for it in ranked if _similarity_score(it) >= 0.35]
+            pool = top if top else ranked
+            candidates = _items_to_candidates(pool)
+            candidates.sort(key=_year_sort_key)
+            return candidates
+        return []
     except requests.exceptions.Timeout:
         return []
     except requests.exceptions.HTTPError as err:
@@ -155,7 +252,7 @@ def fetch_bgm_candidates_raw(title, api_key=""):
             logging.warning(f"BGM候选搜索HTTP失败，返回内容: {snippet}")
         return []
     except ValueError:
-        snippet = _response_body_snippet(locals().get("response"))
+        snippet = _response_body_snippet(locals().get("resp"))
         if snippet:
             logging.warning(f"BGM候选搜索解析失败，返回内容: {snippet}")
         return []
@@ -163,17 +260,18 @@ def fetch_bgm_candidates_raw(title, api_key=""):
         return []
 
 
-def fetch_bgm_candidates(title, api_key=""):
+def fetch_bgm_candidates(title, year=None, api_key=""):
     return cached_request(
         fetch_bgm_candidates_raw,
-        get_cache_key("bgm_candidates_v1", title),
+        get_cache_key("bgm_candidates_v2", f"{title}_{year}"),
         title,
+        year,
         api_key,
     )
 
 
 def fetch_bgm_info_raw(title, api_key=""):
-    candidates = fetch_bgm_candidates_raw(title, api_key)
+    candidates = fetch_bgm_candidates_raw(title, api_key=api_key)
     if candidates:
         return candidate_to_result(candidates[0], "BGM命中")
     return (
@@ -235,7 +333,7 @@ def fetch_tmdb_by_id_raw(tmdb_id, is_tv=True, api_key=""):
     stype = "tv" if is_tv else "movie"
 
     try:
-        response = session.get(
+        response = _tmdb_get(
             f"https://api.themoviedb.org/3/{stype}/{tmdb_id}",
             params={"api_key": api_key.strip(), "language": "zh-CN"},
             timeout=TIMEOUT_DB_DETAIL,
@@ -249,7 +347,21 @@ def fetch_tmdb_by_id_raw(tmdb_id, is_tv=True, api_key=""):
             "poster": data.get("poster_path", ""),
             "fanart": data.get("backdrop_path", ""),
             "release": data.get("first_air_date") or data.get("release_date") or "",
+            "original_title": data.get("original_name") or data.get("original_title") or "",
         }
+
+        # zh-CN 简介为空时补请英文版本
+        if not meta["overview"]:
+            try:
+                resp_en = _tmdb_get(
+                    f"https://api.themoviedb.org/3/{stype}/{tmdb_id}",
+                    params={"api_key": api_key.strip(), "language": "en-US"},
+                    timeout=TIMEOUT_DB_DETAIL,
+                )
+                if resp_en.status_code == 200:
+                    meta["overview"] = resp_en.json().get("overview", "")
+            except Exception:
+                pass
 
         title = data.get("name") or data.get("title") or str(tmdb_id)
         return title, str(data.get("id")), "ID锁定成功", meta
@@ -324,6 +436,7 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
                 "poster": item.get("poster_path", ""),
                 "fanart": item.get("backdrop_path", ""),
                 "release": release,
+                "original_title": item.get("original_name") or item.get("original_title") or "",
             }
             candidates.append(
                 {
@@ -347,7 +460,7 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
                 params["year"] = year
             elif year_mode == "first_air_date_year":
                 params["first_air_date_year"] = year
-        response = session.get(
+        response = _tmdb_get(
             f"https://api.themoviedb.org/3/search/{stype}",
             params=params,
             timeout=TIMEOUT_DB_SEARCH,
@@ -474,7 +587,7 @@ def fetch_tmdb_episode_meta_raw(
         return "", "", ""
 
     try:
-        response = session.get(
+        response = _tmdb_get(
             f"https://api.themoviedb.org/3/tv/{tv_id}/season/{season}/episode/{episode}",
             params={"api_key": api_key.strip(), "language": "zh-CN"},
             timeout=TIMEOUT_DB_DETAIL,
@@ -486,21 +599,31 @@ def fetch_tmdb_episode_meta_raw(
         plot = data.get("overview")
         still = data.get("still_path", "")
 
-        if not name or name == f"Episode {episode}":
-            response_en = session.get(
+        def _is_placeholder(n):
+            """检测 TMDB 返回的占位集名：英文 Episode N 或中文 第N集。"""
+            if not n:
+                return True
+            s = str(n).strip()
+            return bool(
+                re.fullmatch(r"(?i)episode\s*\d+", s)
+                or re.fullmatch(r"第\s*\d+\s*[集話话]", s)
+            )
+
+        if _is_placeholder(name) or not (plot or "").strip():
+            response_en = _tmdb_get(
                 f"https://api.themoviedb.org/3/tv/{tv_id}/season/{season}/episode/{episode}",
                 params={"api_key": api_key.strip(), "language": "en-US"},
                 timeout=TIMEOUT_DB_DETAIL,
             )
             response_en.raise_for_status()
             data_en = response_en.json()
-            name = data_en.get("name", name)
-            plot = plot or data_en.get("overview", "")
+            en_name = data_en.get("name", "")
+            if _is_placeholder(name) and en_name and not _is_placeholder(en_name):
+                name = en_name
+            if not (plot or "").strip():
+                plot = data_en.get("overview", "") or plot
 
-        is_placeholder_name = False
-        if name:
-            name_s = str(name).strip()
-            is_placeholder_name = bool(re.fullmatch(r"(?i)episode\s*\d+", name_s))
+        is_placeholder_name = _is_placeholder(name)
 
         if (
             not plot or not str(plot).strip() or not name or is_placeholder_name
@@ -537,7 +660,7 @@ def fetch_tmdb_episode_meta_raw(
 def fetch_tmdb_episode_meta(
     tv_id, season, episode, api_key, series_title="", api_key_bgm=""
 ):
-    key = get_cache_key("tmdb_ep", f"{tv_id}_{season}_{episode}_{series_title}")
+    key = get_cache_key("tmdb_ep_v3", f"{tv_id}_{season}_{episode}_{series_title}")
     return cached_request(
         fetch_tmdb_episode_meta_raw,
         key,
@@ -555,7 +678,7 @@ def fetch_tmdb_season_poster_raw(tv_id, season, api_key):
         return ""
 
     try:
-        response = session.get(
+        response = _tmdb_get(
             f"https://api.themoviedb.org/3/tv/{tv_id}/season/{season}",
             params={"api_key": api_key.strip(), "language": "zh-CN"},
             timeout=TIMEOUT_DB_DETAIL,
@@ -576,7 +699,52 @@ def fetch_tmdb_season_poster(tv_id, season, api_key):
     )
 
 
-def fetch_hybrid_episode_meta(
+def _fetch_hybrid_tmdb_id_raw(title, year, api_key_tmdb):
+    """根据标题从 TMDB 搜索剧集 ID，供 hybrid 模式缓存复用。"""
+    q = re.sub(r"(?i)HD|重制版|重製版|Remaster|Season.*|第.*季", "", title).strip()
+    q_norm = re.sub(r"[\W_]+", "", str(q).lower())
+    try:
+        response = _tmdb_get(
+            "https://api.themoviedb.org/3/search/tv",
+            params={"api_key": api_key_tmdb.strip(), "query": q, "language": "zh-CN"},
+            timeout=TIMEOUT_DB_SEARCH,
+        )
+        response.raise_for_status()
+        results = response.json().get("results", [])
+
+        best_item = None
+        best_score = 0.0
+        for item in results:
+            name = item.get("name") or item.get("original_name") or ""
+            name_norm = re.sub(r"[\W_]+", "", str(name).lower())
+            if not name_norm or not q_norm:
+                continue
+            score = difflib.SequenceMatcher(None, q_norm, name_norm).ratio()
+            item_year = str(item.get("first_air_date") or "")[:4]
+            if year and item_year and str(year) == item_year:
+                score += 0.15
+            if score > best_score:
+                best_score = score
+                best_item = item
+
+        if best_item and best_score >= 0.6:
+            return str(best_item["id"])
+    except Exception as err:
+        logging.warning(f"hybrid TMDB搜索失败: {err}")
+    return ""
+
+
+def _fetch_hybrid_tmdb_id(title, year, api_key_tmdb):
+    return cached_request(
+        _fetch_hybrid_tmdb_id_raw,
+        get_cache_key("hybrid_tmdb_id_v1", f"{title}_{year}"),
+        title,
+        year,
+        api_key_tmdb,
+    )
+
+
+def fetch_hybrid_episode_meta_raw(
     title, subject_id, s, e, api_key_bgm, api_key_tmdb, year=None
 ):
     ep_n, ep_p = fetch_bgm_episode(subject_id, s, e, api_key_bgm)
@@ -584,41 +752,9 @@ def fetch_hybrid_episode_meta(
 
     if api_key_tmdb and api_key_tmdb.strip():
         try:
-            q_tmdb = re.sub(
-                r"(?i)HD|重制版|重製版|Remaster|Season.*|第.*季", "", title
-            ).strip()
-            q_norm = re.sub(r"[\W_]+", "", str(q_tmdb).lower())
-            response = session.get(
-                "https://api.themoviedb.org/3/search/tv",
-                params={
-                    "api_key": api_key_tmdb.strip(),
-                    "query": q_tmdb,
-                    "language": "zh-CN",
-                },
-                timeout=TIMEOUT_DB_SEARCH,
-            )
-            response.raise_for_status()
-            results = response.json().get("results", [])
-
-            best_item = None
-            best_score = 0.0
-            for item in results:
-                name = item.get("name") or item.get("original_name") or ""
-                name_norm = re.sub(r"[\W_]+", "", str(name).lower())
-                if not name_norm or not q_norm:
-                    continue
-
-                score = difflib.SequenceMatcher(None, q_norm, name_norm).ratio()
-                item_year = str(item.get("first_air_date") or "")[:4]
-                if year and item_year and str(year) == item_year:
-                    score += 0.15
-                if score > best_score:
-                    best_score = score
-                    best_item = item
-
-            if best_item and best_score >= 0.6:
-                tm_id = best_item["id"]
-                ep_s_res = session.get(
+            tm_id = _fetch_hybrid_tmdb_id(title, year, api_key_tmdb)
+            if tm_id:
+                ep_s_res = _tmdb_get(
                     f"https://api.themoviedb.org/3/tv/{tm_id}/season/{s}/episode/{e}",
                     params={"api_key": api_key_tmdb.strip(), "language": "zh-CN"},
                     timeout=TIMEOUT_DB_DETAIL,
@@ -626,7 +762,7 @@ def fetch_hybrid_episode_meta(
                 if ep_s_res.status_code == 200:
                     ep_s = ep_s_res.json().get("still_path", "")
 
-                s_p_res = session.get(
+                s_p_res = _tmdb_get(
                     f"https://api.themoviedb.org/3/tv/{tm_id}/season/{s}",
                     params={"api_key": api_key_tmdb.strip(), "language": "zh-CN"},
                     timeout=TIMEOUT_DB_DETAIL,
@@ -645,3 +781,19 @@ def fetch_hybrid_episode_meta(
                 logging.warning(f"混合来源补全剧集图片失败: {err}")
 
     return ep_n, ep_p, ep_s, s_p
+
+
+def fetch_hybrid_episode_meta(
+    title, subject_id, s, e, api_key_bgm, api_key_tmdb, year=None
+):
+    return cached_request(
+        fetch_hybrid_episode_meta_raw,
+        get_cache_key("hybrid_ep_v1", f"{subject_id}_{s}_{e}"),
+        title,
+        subject_id,
+        s,
+        e,
+        api_key_bgm,
+        api_key_tmdb,
+        year,
+    )

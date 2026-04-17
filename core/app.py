@@ -100,6 +100,7 @@ from utils.helpers import (
     save_image,
     session,
     write_nfo,
+    _nfo_has_empty_plot,
 )
 
 
@@ -108,7 +109,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v1.8")
+        self.root.title("媒体归档刮削助手 v1.9")
         self.root.geometry("1300x900")
 
         self.file_list: list[MediaItem] = []
@@ -122,6 +123,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.file_write_lock = threading.Lock()
         self.popup_lock = threading.Lock()
         self.preview_skip_all_event = threading.Event()
+        self.preview_skip_dirs: set = set()
 
         self.config = self.load_config()
         self.target_root = tk.StringVar(value="")
@@ -229,14 +231,20 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         return can_reuse_dir_ai(cached_ai, pure_name, guess_data)
 
     def _write_sidecar_files(self, item, target_path):
-        """在媒体文件已位于目标位置后写入 NFO 与图片。"""
-        with self.file_write_lock:
-            target_dir = os.path.dirname(target_path)
-            m = item.metadata or {}
-            media_type = m.get("type", "episode")
-            is_tv = media_type == "episode"
-            is_sub_audio = item.old_name.lower().endswith(self.get_sub_audio_exts())
+        """在媒体文件已位于目标位置后写入 NFO 与图片。
 
+        锁内仅做 NFO 写入（毫秒级），图片下载在锁外并发执行，
+        避免 file_write_lock 把多线程刮削串行化。
+        """
+        target_dir = os.path.dirname(target_path)
+        m = item.metadata or {}
+        media_type = m.get("type", "episode")
+        is_tv = media_type == "episode"
+        is_sub_audio = item.old_name.lower().endswith(self.get_sub_audio_exts())
+
+        image_tasks = []  # [(local_path, url), ...]
+
+        with self.file_write_lock:
             if is_tv:
                 if not is_sub_audio:
                     ep_nfo = os.path.splitext(target_path)[0] + ".nfo"
@@ -249,7 +257,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                     if thumb_source:
                         thumb_path = os.path.splitext(target_path)[0] + "-thumb.jpg"
                         if not os.path.exists(thumb_path):
-                            save_image(thumb_path, thumb_source)
+                            image_tasks.append((thumb_path, thumb_source))
 
                 cur_dir = target_dir
                 dir_name = os.path.basename(cur_dir)
@@ -275,7 +283,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                     write_nfo(s_nfo_root, m, "season")
 
                 if m.get("s_poster") and not os.path.exists(s_poster_root):
-                    save_image(s_poster_root, m["s_poster"])
+                    image_tasks.append((s_poster_root, m["s_poster"]))
 
                 if is_season_folder:
                     season_nfo_local = os.path.join(cur_dir, "season.nfo")
@@ -285,16 +293,16 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                         write_nfo(season_nfo_local, m, "season")
 
                     if m.get("s_poster") and not os.path.exists(folder_jpg_local):
-                        save_image(folder_jpg_local, m["s_poster"])
+                        image_tasks.append((folder_jpg_local, m["s_poster"]))
 
                 tvshow_nfo = os.path.join(root_d, "tvshow.nfo")
                 poster_path = os.path.join(root_d, "poster.jpg")
 
-                if not os.path.exists(tvshow_nfo):
+                if not os.path.exists(tvshow_nfo) or _nfo_has_empty_plot(tvshow_nfo):
                     write_nfo(tvshow_nfo, m, "tvshow")
 
                 if m.get("poster") and not os.path.exists(poster_path):
-                    save_image(poster_path, m["poster"])
+                    image_tasks.append((poster_path, m["poster"]))
 
             else:
                 if not is_sub_audio:
@@ -304,11 +312,15 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
                 poster_path = os.path.join(target_dir, "poster.jpg")
                 if m.get("poster") and not os.path.exists(poster_path):
-                    save_image(poster_path, m["poster"])
+                    image_tasks.append((poster_path, m["poster"]))
 
                 fanart_path = os.path.join(target_dir, "fanart.jpg")
                 if m.get("fanart") and not os.path.exists(fanart_path):
-                    save_image(fanart_path, m["fanart"])
+                    image_tasks.append((fanart_path, m["fanart"]))
+
+        # 锁外并发下载图片，不阻塞其他线程的 NFO 写入
+        for img_path, img_url in image_tasks:
+            save_image(img_path, img_url)
 
     def create_widgets(self):
         """创建UI组件"""
@@ -870,6 +882,33 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 key=lambda c: 0 if extract_year_from_release(c.get("release") or "") == year_str else 1,
             )
 
+        # 精确/高置信标题匹配：无需 embedding/Ollama 直接命中
+        import difflib as _difflib
+        import re as _re
+        _q_norm = _re.sub(r"[\W_]+", "", str(query_title or "").lower())
+        if _q_norm:
+            _exact = None
+            _scores = []
+            for _c in candidates:
+                _ct = _re.sub(r"[\W_]+", "", str(_c.get("title") or "").lower())
+                _ca = _re.sub(r"[\W_]+", "", str(_c.get("alt_title") or "").lower())
+                _s = max(
+                    _difflib.SequenceMatcher(None, _q_norm, _ct).ratio() if _ct else 0.0,
+                    _difflib.SequenceMatcher(None, _q_norm, _ca).ratio() if _ca else 0.0,
+                )
+                _scores.append((_s, _c))
+                if _ct == _q_norm or _ca == _q_norm:
+                    _exact = _c
+                    break
+            if _exact is None and _scores:
+                _scores.sort(key=lambda x: x[0], reverse=True)
+                _top_s, _top_c = _scores[0]
+                _second_s = _scores[1][0] if len(_scores) > 1 else 0.0
+                if _top_s >= 0.90 and (_top_s - _second_s) >= 0.20:
+                    _exact = _top_c
+            if _exact is not None:
+                return candidate_to_result(_exact, f"标题匹配/{source_name}命中")
+
         ranked_candidates, emb_pick, emb_msg = self._rerank_candidates_with_embedding(
             item, query_title, year, is_tv, source_name, candidates
         )
@@ -912,18 +951,20 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         merged = []
         seen_ids = set()
         used_query = query_title
+        _first_hit = False
 
         for q in query_titles:
             if mode == "siliconflow_tmdb":
                 cur = fetch_tmdb_candidates(q, year, is_tv, self.tmdb_api_key.get())
             else:
-                cur = fetch_bgm_candidates(q, self.bgm_api_key.get())
+                cur = fetch_bgm_candidates(q, year, self.bgm_api_key.get())
 
             if not cur:
                 continue
 
-            if used_query == query_title:
+            if not _first_hit:
                 used_query = q
+                _first_hit = True
 
             for cand in cur:
                 cid = str(cand.get("id") or "")
@@ -1035,6 +1076,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.pbar["value"] = 0
         self.status.config(text="识别中...")
         self.preview_skip_all_event.clear()
+        self.preview_skip_dirs.clear()
 
         threading.Thread(target=self.run_preview_pool, daemon=True).start()
 
@@ -1051,14 +1093,17 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         if not self.file_list:
             return
 
-        # 检查元数据
-        for item in self.file_list:
-            if item.metadata.get("id") == "None":
-                messagebox.showwarning(
-                    "缺少元数据",
-                    "请先执行【高速识别预览】后再进行重命名操作。",
-                    parent=self.root,
-                )
+        unprocessed = sum(
+            1 for item in self.file_list if item.metadata.get("id") == "None"
+        )
+        if unprocessed:
+            op = "归档" if is_archive else "重命名"
+            ok = messagebox.askokcancel(
+                "部分文件未预览",
+                f"有 {unprocessed} 个文件尚未完成识别预览，将被跳过，其余已识别的文件正常{op}。\n\n是否继续？",
+                parent=self.root,
+            )
+            if not ok:
                 return
 
         threading.Thread(
@@ -1070,13 +1115,16 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         if not self.file_list:
             return
 
-        for item in self.file_list:
-            if item.metadata.get("id") == "None":
-                messagebox.showwarning(
-                    "缺少元数据",
-                    "请先执行【高速识别预览】后再进行刮削操作。",
-                    parent=self.root,
-                )
+        unprocessed = sum(
+            1 for item in self.file_list if item.metadata.get("id") == "None"
+        )
+        if unprocessed:
+            ok = messagebox.askokcancel(
+                "部分文件未预览",
+                f"有 {unprocessed} 个文件尚未完成识别预览，将被跳过刮削，其余已识别的文件正常刮削。\n\n是否继续？",
+                parent=self.root,
+            )
+            if not ok:
                 return
 
         threading.Thread(

@@ -513,6 +513,13 @@ def show_candidate_picker_dialog(
         _close_with_result(candidates[idx])
 
     def on_skip():
+        skip_dir = item.dir
+        gui.preview_skip_dirs.add(skip_dir)
+        for other in gui.file_list:
+            if other.dir == skip_dir and other.id != item.id:
+                gui.root.after(
+                    0, lambda id_val=other.id: gui.tree.set(id_val, "st", "已跳过")
+                )
         _close_with_result(None)
 
     def on_close_skip_all():
@@ -527,7 +534,7 @@ def show_candidate_picker_dialog(
     btn_frame = ttk.Frame(select_win)
     btn_frame.pack(fill=tk.X, padx=10, pady=8)
     ttk.Button(btn_frame, text="确认选择", command=on_confirm).pack(side=tk.LEFT)
-    ttk.Button(btn_frame, text="跳过此文件", command=on_skip).pack(
+    ttk.Button(btn_frame, text="跳过此文件夹", command=on_skip).pack(
         side=tk.LEFT, padx=8
     )
 

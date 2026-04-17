@@ -44,16 +44,32 @@ def extract_lang_and_ext(filename, lang_tags):
 
 
 def extract_explicit_season(pure_name):
-    """Only parse explicit season markers to avoid treating years as seasons."""
+    """Only parse explicit season markers to avoid treating years as seasons.
+
+    S-prefixed patterns (S00E01, S00) unambiguously denote season 0 (specials)
+    and are allowed to return 0.  Other patterns (Season N, 第N季, Nth Season)
+    must be >= 1 to avoid misidentifying year-like numbers.
+    """
     text = str(pure_name or "")
-    patterns = [
+    # S-prefixed patterns are always unambiguous — allow season 0
+    s_prefix_patterns = [
         r"(?i)\bS\s*0*(\d{1,2})\s*E\s*0*\d{1,4}\b",
         r"(?i)\bS\s*0*(\d{1,2})\b",
+    ]
+    for pattern in s_prefix_patterns:
+        match = re.search(pattern, text)
+        if not match:
+            continue
+        season_num = safe_int(match.group(1), -1)
+        if 0 <= season_num <= 99:
+            return season_num
+    # Other patterns must be >= 1 to avoid false-positives
+    other_patterns = [
         r"(?i)\bSeason\s*0*(\d{1,2})\b",
         r"(?i)\b(\d{1,2})(?:st|nd|rd|th)\s*Season\b",
         r"第\s*0*(\d{1,2})\s*季",
     ]
-    for pattern in patterns:
+    for pattern in other_patterns:
         match = re.search(pattern, text)
         if not match:
             continue
@@ -108,6 +124,11 @@ def can_reuse_dir_ai(cached_ai, pure_name, guess_data=None):
         if len(cand_key) >= 4 and len(cached_key) >= 4:
             ratio = difflib.SequenceMatcher(None, cand_key, cached_key).ratio()
             if ratio >= 0.85:
+                return True
+            # 处理 guessit 剥离 OVA/SP 等标签后标题变短的情况：
+            # 若其中一方是另一方的前缀，也视为同一作品（如"骑士团"与"骑士团 OVA"）
+            shorter, longer = (cand_key, cached_key) if len(cand_key) <= len(cached_key) else (cached_key, cand_key)
+            if longer.startswith(shorter) and len(shorter) >= 4:
                 return True
 
     return False

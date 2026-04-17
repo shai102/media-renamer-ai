@@ -45,6 +45,13 @@ def run_execution(gui, is_archive):
 def process_one_file(gui, item, is_archive):
     """Process single file move/rename and sidecar writing."""
     try:
+        # 跳过未经预览识别的条目（new_name_only 为空表示未识别）
+        if not item.new_name_only:
+            gui.root.after(
+                0, lambda id_val=item.id: gui.tree.set(id_val, "st", "已跳过(未预览)")
+            )
+            return
+
         if is_archive and item.full_target:
             target = item.full_target
         else:
@@ -144,6 +151,13 @@ def run_scrape_execution(gui):
 def process_one_file_scrape(gui, item):
     """Process single file scrape-only (write NFO and download images)."""
     try:
+        # 跳过未经预览识别的条目
+        if item.metadata.get("id") == "None":
+            gui.root.after(
+                0, lambda id_val=item.id: gui.tree.set(id_val, "st", "已跳过(未预览)")
+            )
+            return
+
         target_path = item.path
         if not target_path or not os.path.exists(target_path):
             gui.root.after(
