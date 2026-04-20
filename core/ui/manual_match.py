@@ -552,9 +552,15 @@ def show_context_menu(gui, event):
     if row:
         if row not in gui.tree.selection():
             gui.tree.selection_set(row)
+        gui.tree.focus(row)
 
         menu = tk.Menu(gui.root, tearoff=0)
         if gui.is_source_row(row):
+            menu.add_command(
+                label="高速识别预览该分组",
+                command=gui.start_preview,
+            )
+            menu.add_separator()
             is_open = bool(gui.tree.item(row, "open"))
             menu.add_command(
                 label="折叠该分组" if is_open else "展开该分组",
@@ -566,6 +572,11 @@ def show_context_menu(gui, event):
                 command=lambda row_id=row: gui.remove_group_by_row_id(row_id),
             )
         elif gui.is_season_row(row):
+            menu.add_command(
+                label="高速识别预览该 Season",
+                command=gui.start_preview,
+            )
+            menu.add_separator()
             is_open = bool(gui.tree.item(row, "open"))
             menu.add_command(
                 label="折叠该 Season" if is_open else "展开该 Season",
