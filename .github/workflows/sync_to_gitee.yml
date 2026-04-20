@@ -13,9 +13,9 @@ jobs:
         uses: Yikun/gitee-mirror-action@master
         with:
           # 這裡換成你的 GitHub 用戶名/倉庫名
-          src: github.com/shai102/media-renamer-ai
+          src: shai102/media-renamer-ai
           # 這裡換成你的 Gitee 用戶名/倉庫名
-          dst: gitee.com/shai102asdas/media-renamer-ai
+          dst: gitee.com/shai102/media-renamer-ai
           dst_key: ${{ secrets.GITEE_SSH_KEY }}
           dst_token: ${{ secrets.GITEE_TOKEN }} # 這是選填，如果沒配置 Token 可刪除此行
           static_list: "media-renamer-ai"
