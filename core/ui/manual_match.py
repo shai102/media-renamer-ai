@@ -415,10 +415,12 @@ def request_manual_candidate_choice(
         if poster_url:
             poster_urls.append(poster_url)
 
-    gui.root.after(0, lambda: gui.tree.set(item.id, "st", "海报加载中..."))
+    gui.root.after(0, lambda: gui.update_item_display(item, status="海报加载中..."))
     _prefetch_poster_urls(poster_urls)
 
-    gui.root.after(0, lambda: gui.tree.set(item.id, "st", "多候选，等待手动选择"))
+    gui.root.after(
+        0, lambda: gui.update_item_display(item, status="多候选，等待手动选择")
+    )
     with gui.popup_lock:
         if gui.preview_skip_all_event.is_set():
             return None
@@ -428,7 +430,7 @@ def request_manual_candidate_choice(
             done_event.set()
             gui.root.after(
                 0,
-                lambda: gui.tree.set(item.id, "st", "手动选择超时，已跳过"),
+                lambda: gui.update_item_display(item, status="手动选择超时，已跳过"),
             )
     return result_holder.get("selected")
 
@@ -517,9 +519,7 @@ def show_candidate_picker_dialog(
         gui.preview_skip_dirs.add(skip_dir)
         for other in gui.file_list:
             if other.dir == skip_dir and other.id != item.id:
-                gui.root.after(
-                    0, lambda id_val=other.id: gui.tree.set(id_val, "st", "已跳过")
-                )
+                gui.root.after(0, lambda other_item=other: gui.update_item_display(other_item, status="已跳过"))
         _close_with_result(None)
 
     def on_close_skip_all():
@@ -553,23 +553,46 @@ def show_context_menu(gui, event):
         if row not in gui.tree.selection():
             gui.tree.selection_set(row)
 
-        sel_count = len(gui.tree.selection())
         menu = tk.Menu(gui.root, tearoff=0)
-        menu.add_command(
-            label=f"手动精准匹配并锁定(将应用到选中的 {sel_count} 个文件)",
-            command=gui.manual_match,
-        )
-        menu.add_separator()
-        menu.add_command(
-            label="从列表删除该文件",
-            command=lambda row_id=row: gui.remove_file_by_row_id(row_id),
-        )
+        if gui.is_source_row(row):
+            is_open = bool(gui.tree.item(row, "open"))
+            menu.add_command(
+                label="折叠该分组" if is_open else "展开该分组",
+                command=lambda row_id=row: gui.toggle_group_row(row_id),
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="从列表删除该分组",
+                command=lambda row_id=row: gui.remove_group_by_row_id(row_id),
+            )
+        elif gui.is_season_row(row):
+            is_open = bool(gui.tree.item(row, "open"))
+            menu.add_command(
+                label="折叠该 Season" if is_open else "展开该 Season",
+                command=lambda row_id=row: gui.toggle_group_row(row_id),
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="从列表删除该 Season",
+                command=lambda row_id=row: gui.remove_season_group_by_row_id(row_id),
+            )
+        else:
+            sel_count = len(gui.get_selected_file_ids())
+            menu.add_command(
+                label=f"手动精准匹配并锁定(将应用到选中的 {sel_count} 个文件)",
+                command=gui.manual_match,
+            )
+            menu.add_separator()
+            menu.add_command(
+                label="从列表删除该文件",
+                command=lambda row_id=row: gui.remove_file_by_row_id(row_id),
+            )
         menu.post(event.x_root, event.y_root)
 
 
 def manual_match(gui):
     """Entry point for manual match workflow."""
-    selected_ids = gui.tree.selection()
+    selected_ids = gui.get_selected_file_ids()
     if not selected_ids:
         return
 
@@ -582,7 +605,7 @@ def manual_match(gui):
         return
 
     item = gui.file_list[first_idx]
-    current_display_title = gui.tree.item(first_row_id, "values")[1]
+    current_display_title = gui.tree.item(first_row_id, "values")[0]
     search_initial = (
         current_display_title
         if current_display_title

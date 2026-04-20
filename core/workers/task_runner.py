@@ -45,6 +45,24 @@ SPECIAL_EPISODE_RE = re.compile(
 PROLOGUE_RE = re.compile(r"(?i)(?<![A-Z0-9])PROLOGUE(?![A-Z0-9])")
 
 
+def extract_season_from_dir(dir_path):
+    """Extract a season number from folder names like Season 2 / S02."""
+    current = str(dir_path or "")
+    for _ in range(3):
+        folder_name = os.path.basename(current)
+        match = re.search(r"(?i)^(?:season\s*|s)\s*(\d{1,2})$", folder_name)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                return None
+        parent = os.path.dirname(current)
+        if not parent or parent == current:
+            break
+        current = parent
+    return None
+
+
 def async_batch_runner(gui, indices, title, t_id, msg, meta):
     """Run background sync updates for selected files."""
     with ThreadPoolExecutor(max_workers=gui._get_sync_workers()) as executor:
@@ -212,15 +230,12 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
 
         gui.root.after(
             0,
-            lambda: gui.tree.item(
-                item.id,
-                values=(
-                    item.old_name,
-                    safe_title,
-                    t_id,
-                    item.full_target or new_fn,
-                    msg,
-                ),
+            lambda: gui.update_item_display(
+                item,
+                title=safe_title,
+                match_id=t_id,
+                target=item.full_target or new_fn,
+                status=msg,
             ),
         )
     except Exception as err:
@@ -229,8 +244,8 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
         if item and item.id:
             gui.root.after(
                 0,
-                lambda id_val=item.id, msg=err_msg: gui.tree.set(
-                    id_val, "st", gui._friendly_status_text(msg)
+                lambda msg=err_msg: gui.update_item_display(
+                    item, status=gui._friendly_status_text(msg)
                 ),
             )
         else:
@@ -244,12 +259,14 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
 
 def run_preview_pool(gui):
     """Run preview recognition tasks with configured worker count."""
-    total = len(gui.file_list)
+    active_ids = set(gui.action_scope_item_ids or [item.id for item in gui.file_list])
+    indices = [i for i, item in enumerate(gui.file_list) if item.id in active_ids]
+    total = len(indices)
     gui.root.after(0, lambda max_v=total: gui.pbar.config(maximum=max_v))
 
     try:
         with ThreadPoolExecutor(max_workers=gui._get_preview_workers()) as executor:
-            list(executor.map(gui.process_task, range(total)))
+            list(executor.map(gui.process_task, indices))
     except Exception as err:
         logging.error(f"预览处理失败: {err}")
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"处理失败: {str(err)[:30]}")
@@ -274,48 +291,83 @@ def process_task(gui, i):
 
     try:
         if gui.preview_skip_all_event.is_set() or item.dir in gui.preview_skip_dirs:
-            gui.root.after(
-                0, lambda id_val=item.id: gui.tree.set(id_val, "st", "已跳过")
-            )
+            gui.root.after(0, lambda: gui.update_item_display(item, status="已跳过"))
             return
 
-        gui.root.after(
-            0, lambda id_val=item.id: gui.tree.set(id_val, "st", "识别中")
-        )
+        gui.root.after(0, lambda: gui.update_item_display(item, status="识别中"))
 
         if gui.preview_skip_all_event.is_set() or item.dir in gui.preview_skip_dirs:
-            gui.root.after(
-                0, lambda id_val=item.id: gui.tree.set(id_val, "st", "已跳过")
-            )
+            gui.root.after(0, lambda: gui.update_item_display(item, status="已跳过"))
             return
 
         pure, ext = gui.extract_lang_and_ext(item.old_name)
         dir_p = item.dir
         mode = gui.source_var.get()
-        g = guessit(pure)
+
+        strip_kw = []
+        if hasattr(gui, "_get_strip_keywords"):
+            strip_kw = gui._get_strip_keywords()
+        elif getattr(gui, "strip_keywords", None):
+            strip_kw = list(getattr(gui, "strip_keywords", None) or [])
+
+        pure_for_parse = pure
+        if strip_kw:
+            for keyword in strip_kw:
+                if keyword:
+                    pure_for_parse = re.sub(
+                        re.escape(keyword), " ", pure_for_parse, flags=re.IGNORECASE
+                    )
+            pure_for_parse = re.sub(r"\s+", " ", pure_for_parse).strip()
+
+        g = guessit(pure_for_parse)
 
         extracted_ep = extract_episode_number(pure, g)
+
+        ai_mode_obj = getattr(gui, "ai_mode", None)
+        ai_mode_val = str(ai_mode_obj.get() if ai_mode_obj else "assist").strip().lower()
 
         with gui.cache_lock:
             cached_ai = gui.dir_cache.get(dir_p)
 
-        if cached_ai and gui._can_reuse_dir_ai(cached_ai, pure, g):
+        parse_source = "guessit"
+        cached_parse_source = str((cached_ai or {}).get("parse_source") or "guessit")
+        can_reuse_cached_parse = bool(cached_ai) and gui._can_reuse_dir_ai(
+            cached_ai, pure, g
+        )
+        if can_reuse_cached_parse:
+            if ai_mode_val == "force":
+                can_reuse_cached_parse = cached_parse_source == "ai"
+            elif ai_mode_val == "disabled":
+                can_reuse_cached_parse = cached_parse_source != "ai"
+
+        if can_reuse_cached_parse:
             t = cached_ai["title"]
             y = cached_ai.get("year")
             s = gui._pick_season(pure, g, cached_ai.get("season") or 1)
             e = extracted_ep or 1
             ai_msg = "复用"
             ai_data = cached_ai
+            parse_source = cached_ai.get("parse_source", "guessit")
         else:
             ai_data = None
             ai_msg = ""
 
-            if gui.prefer_ollama.get():
-                if gui.ollama_url.get().strip() and gui.ollama_model.get().strip():
-                    ai_data, ai_msg = gui._parse_with_ollama(pure)
-                    if ai_data is None and gui.sf_api_key.get().strip():
+            if ai_mode_val == "force":
+                if gui.prefer_ollama.get():
+                    if gui.ollama_url.get().strip() and gui.ollama_model.get().strip():
+                        ai_data, ai_msg = gui._parse_with_ollama(pure_for_parse)
+                        if ai_data is None and gui.sf_api_key.get().strip():
+                            ai_data, ai_msg = fetch_siliconflow_info(
+                                pure_for_parse,
+                                gui.sf_api_key.get(),
+                                gui.sf_api_url.get(),
+                                gui.sf_model.get(),
+                                gui._get_ai_temperature(),
+                                gui._get_ai_top_p(),
+                            )
+                    elif gui.sf_api_key.get().strip():
                         ai_data, ai_msg = fetch_siliconflow_info(
-                            pure,
+                            pure_for_parse,
                             gui.sf_api_key.get(),
                             gui.sf_api_url.get(),
                             gui.sf_model.get(),
@@ -324,39 +376,64 @@ def process_task(gui, i):
                         )
                 elif gui.sf_api_key.get().strip():
                     ai_data, ai_msg = fetch_siliconflow_info(
-                        pure,
+                        pure_for_parse,
                         gui.sf_api_key.get(),
                         gui.sf_api_url.get(),
                         gui.sf_model.get(),
                         gui._get_ai_temperature(),
                         gui._get_ai_top_p(),
                     )
-            elif gui.sf_api_key.get().strip():
-                ai_data, ai_msg = fetch_siliconflow_info(
-                    pure,
-                    gui.sf_api_key.get(),
-                    gui.sf_api_url.get(),
-                    gui.sf_model.get(),
-                    gui._get_ai_temperature(),
-                    gui._get_ai_top_p(),
-                )
 
-            if ai_data:
-                t = ai_data.get("title", "未知")
-                y = ai_data.get("year")
-                ai_season = safe_int(ai_data.get("season"), 1)
-                if ai_season < 1:
-                    ai_season = 1
-                s = gui._pick_season(pure, g, ai_season)
-                e = extracted_ep or safe_int(ai_data.get("episode"), 1)
-                with gui.cache_lock:
-                    gui.dir_cache[dir_p] = ai_data
+                if ai_data:
+                    t = ai_data.get("title", "未知")
+                    y = ai_data.get("year")
+                    ai_season = safe_int(ai_data.get("season"), 1)
+                    if ai_season < 1:
+                        ai_season = 1
+                    s = gui._pick_season(pure, g, ai_season)
+                    e = extracted_ep or safe_int(ai_data.get("episode"), 1)
+                    parse_source = "ai"
+                    with gui.cache_lock:
+                        ai_data["parse_source"] = "ai"
+                        gui.dir_cache[dir_p] = ai_data
+                else:
+                    item.metadata = {"id": "None", "parse_source": "ai"}
+                    item.new_name_only = ""
+                    item.full_target = ""
+                    item.parse_source = "ai"
+                    gui.root.after(
+                        0,
+                        lambda: gui.update_item_display(
+                            item,
+                            title="待手动",
+                            match_id="None",
+                            target="(AI 强制模式未识别成功)",
+                            status="待手动确认",
+                        ),
+                    )
+                    return
             else:
                 t = g.get("title") or derive_title_from_filename(pure) or "未知"
                 y = g.get("year")
-                s = gui._pick_season(pure, g, 1)
+                if not y:
+                    year_dir = dir_p
+                    for _ in range(3):
+                        folder_name = os.path.basename(year_dir)
+                        year_match = re.search(r"\b((?:19|20)\d{2})\b", folder_name)
+                        if year_match:
+                            y = int(year_match.group(1))
+                            break
+                        parent_dir = os.path.dirname(year_dir)
+                        if not parent_dir or parent_dir == year_dir:
+                            break
+                        year_dir = parent_dir
+                dir_season = extract_season_from_dir(dir_p)
+                s = gui._pick_season(
+                    pure, g, dir_season if dir_season is not None else 1
+                )
                 e = extracted_ep or 1
                 ai_msg = "猜测"
+                parse_source = "guessit"
                 if t and normalize_compare_text(t) not in ("", "未知"):
                     with gui.cache_lock:
                         if dir_p not in gui.dir_cache:
@@ -365,6 +442,7 @@ def process_task(gui, i):
                                 "year": y,
                                 "season": s,
                                 "episode": e,
+                                "parse_source": "guessit",
                             }
 
         if SPECIAL_TAG_RE.search(pure):
@@ -397,7 +475,8 @@ def process_task(gui, i):
         if forced_o != 0:
             e_calc = max(1, safe_int(e, 1) + forced_o)
 
-        cache_key = f"{t}_{safe_str(y)}_{is_tv}_{mode}"
+        folder_id_for_cache = extract_db_id_from_path(item.path, mode) or ""
+        cache_key = f"{t}_{safe_str(y)}_{is_tv}_{mode}_{folder_id_for_cache}"
 
         with gui.cache_lock:
             db_c = gui.manual_locks.get(path_key) or gui.db_cache.get(cache_key)
@@ -431,6 +510,60 @@ def process_task(gui, i):
                             db_c = (_ft, _fid, "文件夹ID锁定", _fmeta)
                     if not db_c:
                         db_c = gui._resolve_db_match(item, t, y, is_tv, mode, ai_data, g)
+
+                    if ai_mode_val == "assist" and (
+                        not db_c or (len(db_c) >= 2 and db_c[1] == "None")
+                    ):
+                        retry_ai = None
+                        if gui.prefer_ollama.get():
+                            if gui.ollama_url.get().strip() and gui.ollama_model.get().strip():
+                                retry_ai, _ = gui._parse_with_ollama(pure_for_parse)
+                                if retry_ai is None and gui.sf_api_key.get().strip():
+                                    retry_ai, _ = fetch_siliconflow_info(
+                                        pure_for_parse,
+                                        gui.sf_api_key.get(),
+                                        gui.sf_api_url.get(),
+                                        gui.sf_model.get(),
+                                        gui._get_ai_temperature(),
+                                        gui._get_ai_top_p(),
+                                    )
+                            elif gui.sf_api_key.get().strip():
+                                retry_ai, _ = fetch_siliconflow_info(
+                                    pure_for_parse,
+                                    gui.sf_api_key.get(),
+                                    gui.sf_api_url.get(),
+                                    gui.sf_model.get(),
+                                    gui._get_ai_temperature(),
+                                    gui._get_ai_top_p(),
+                                )
+                        elif gui.sf_api_key.get().strip():
+                            retry_ai, _ = fetch_siliconflow_info(
+                                pure_for_parse,
+                                gui.sf_api_key.get(),
+                                gui.sf_api_url.get(),
+                                gui.sf_model.get(),
+                                gui._get_ai_temperature(),
+                                gui._get_ai_top_p(),
+                            )
+
+                        if retry_ai:
+                            ai_title = retry_ai.get("title", "")
+                            ai_year = retry_ai.get("year")
+                            if ai_title and normalize_compare_text(ai_title) != normalize_compare_text(t):
+                                t = ai_title
+                                y = ai_year
+                                ai_data = retry_ai
+                                ai_msg = "AI辅助"
+                                parse_source = "ai"
+                                with gui.cache_lock:
+                                    retry_ai["parse_source"] = "ai"
+                                    gui.dir_cache[dir_p] = retry_ai
+                                db_retry = gui._resolve_db_match(
+                                    item, t, y, is_tv, mode, ai_data, g
+                                )
+                                if db_retry and len(db_retry) >= 2 and db_retry[1] != "None":
+                                    db_c = db_retry
+
                     with gui.cache_lock:
                         if db_c and len(db_c) >= 2 and db_c[1] != "None":
                             gui.db_cache[cache_key] = db_c
@@ -450,8 +583,11 @@ def process_task(gui, i):
 
         std_t, tid, db_m, meta = db_c
 
+        is_bgm_fallback = meta.get("_provider") == "bgm"
+        effective_tmdb = mode == "siliconflow_tmdb" and not is_bgm_fallback
+
         # 搜索路径返回的 meta 缺少 genres/runtime/status/studios，用 detail 接口补全
-        if mode == "siliconflow_tmdb" and tid and tid != "None" and not meta.get("genres"):
+        if effective_tmdb and tid and tid != "None" and not meta.get("genres"):
             _, _, _, detail_meta = fetch_tmdb_by_id(tid, is_tv, gui.tmdb_api_key.get())
             if detail_meta:
                 meta = {**detail_meta, **{k: v for k, v in meta.items() if v}}
@@ -459,7 +595,7 @@ def process_task(gui, i):
         ep_n, ep_p, ep_s, s_p = "", "", "", ""
 
         if is_tv and tid != "None":
-            if mode == "siliconflow_tmdb":
+            if effective_tmdb:
                 ep_n, ep_p, ep_s = fetch_tmdb_episode_meta(
                     tid,
                     s,
@@ -518,14 +654,14 @@ def process_task(gui, i):
         new_fn = re.sub(r"\s+(?=\.)", "", new_fn).strip()
 
         actors, directors = [], []
-        if mode == "siliconflow_tmdb" and tid and tid != "None":
+        if effective_tmdb and tid and tid != "None":
             actors, directors = fetch_tmdb_credits(
                 tid, is_tv=is_tv, api_key=gui.tmdb_api_key.get()
             )
 
         item.metadata = {
             "id": tid,
-            "provider": "tmdb" if mode == "siliconflow_tmdb" else "bgm",
+            "provider": "tmdb" if effective_tmdb else "bgm",
             "title": safe_std_t,
             "year": y,
             "ep_title": ep_n_final or f"第 {e_calc} 集",
@@ -548,13 +684,15 @@ def process_task(gui, i):
             "votes": meta.get("votes", 0),
             "release": meta.get("release", ""),
             "original_title": meta.get("original_title", ""),
+            "parse_source": parse_source,
         }
+        item.parse_source = parse_source
 
         item.new_name_only = new_fn
 
         root_d = gui.target_root.get().strip()
         if root_d:
-            id_tag = f"tmdbid={tid}" if mode == "siliconflow_tmdb" else f"bgmid={tid}"
+            id_tag = f"tmdbid={tid}" if effective_tmdb else f"bgmid={tid}"
             folder_name = safe_filename(f"{safe_std_t} [{id_tag}]")
             season_folder = f"Season {s}"
 
@@ -576,15 +714,12 @@ def process_task(gui, i):
 
         gui.root.after(
             0,
-            lambda: gui.tree.item(
-                item.id,
-                values=(
-                    item.old_name,
-                    safe_std_t,
-                    tid,
-                    item.full_target or new_fn,
-                    gui._build_status_text(ai_msg, db_m),
-                ),
+            lambda: gui.update_item_display(
+                item,
+                title=safe_std_t,
+                match_id=tid,
+                target=item.full_target or new_fn,
+                status=gui._build_status_text(ai_msg, db_m),
             ),
         )
     except Exception as ex:
@@ -592,31 +727,26 @@ def process_task(gui, i):
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"异常: {str(ex)[:50]}")
         gui.root.after(
             0,
-            lambda id_val=item.id,
-            old_name=item.old_name,
-            msg=err_msg: gui.tree.item(
-                id_val,
-                values=(
-                    old_name,
-                    "错误",
-                    "None",
-                    gui._friendly_status_text(msg),
-                    "崩溃",
-                ),
+            lambda msg=err_msg: gui.update_item_display(
+                item,
+                title="错误",
+                match_id="None",
+                target=gui._friendly_status_text(msg),
+                status="崩溃",
             ),
         )
     finally:
         gui.root.after(0, lambda: gui.pbar.step(1))
 
 
-def run_execution(gui, is_archive):
+def run_execution(gui, run_mode):
     """Run rename/archive execution with background worker pool."""
-    return execution_run_execution(gui, is_archive)
+    return execution_run_execution(gui, run_mode)
 
 
-def process_one_file(gui, item, is_archive):
+def process_one_file(gui, item, run_mode):
     """Process single file move/rename and sidecar writing."""
-    return execution_process_one_file(gui, item, is_archive)
+    return execution_process_one_file(gui, item, run_mode)
 
 
 def run_scrape_execution(gui):

@@ -113,6 +113,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.root.geometry("1300x900")
 
         self.file_list: list[MediaItem] = []
+        self.item_by_id: dict[str, MediaItem] = {}
         self.dir_cache = {}
         self.db_cache = {}
         self.manual_locks = {}
@@ -124,6 +125,10 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.popup_lock = threading.Lock()
         self.preview_skip_all_event = threading.Event()
         self.preview_skip_dirs: set = set()
+        self.view_mode = tk.StringVar(value="group")
+        self.expanded_groups: set[str] = set()
+        self._item_seq = 0
+        self.action_scope_item_ids: list[str] = []
 
         self.config = self.load_config()
         self.target_root = tk.StringVar(value="")
@@ -140,6 +145,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.ai_top_p = tk.StringVar(
             value=f"{self._clamp_top_p(self.config.get('ai_top_p'), 0.9):.2f}"
         )
+        self.ai_mode = tk.StringVar(value=self.config.get("ai_mode", "assist"))
         self.bgm_api_key = tk.StringVar(value=self.config.get("bgm_api_key", ""))
         self.tmdb_api_key = tk.StringVar(value=self.config.get("tmdb_api_key", ""))
         self.tv_format = tk.StringVar(
@@ -158,6 +164,11 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
         self.lang_tags = tk.StringVar(
             value=self.config.get("lang_tags", DEFAULT_LANG_TAGS)
+        )
+        self.strip_keywords_var = tk.StringVar(
+            value=self._normalize_strip_keywords_text(
+                self.config.get("strip_keywords", [])
+            )
         )
 
         # Ollama 相关配置
@@ -379,15 +390,18 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         # 主表格
         mid = ttk.Frame(self.root, padding=10)
         mid.pack(fill=tk.BOTH, expand=True)
-        cols = ("old", "title", "id", "new", "st")
+        cols = ("title", "id", "new", "st")
         self.tree = ttk.Treeview(
-            mid, columns=cols, show="headings", selectmode="extended"
+            mid, columns=cols, show="tree headings", selectmode="extended"
         )
+
+        self.tree.heading("#0", text="添加路径 / Season / 原文件名")
+        self.tree.column("#0", width=320, anchor=tk.W, stretch=True)
 
         for c, h, w in zip(
             cols,
-            ["原文件名", "识别标题", "匹配 ID", "新文件名 / 归档路径", "状态"],
-            [300, 200, 80, 500, 150],
+            ["识别标题", "匹配 ID", "新文件名 / 归档路径", "状态"],
+            [220, 90, 560, 180],
         ):
             self.tree.heading(c, text=h)
             self.tree.column(
@@ -395,12 +409,54 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             )
 
         vsb = ttk.Scrollbar(mid, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscroll=vsb.set)
+        hsb = ttk.Scrollbar(mid, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        hsb.pack(side=tk.BOTTOM, fill=tk.X)
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<Button-3>", self.show_context_menu)
         self.tree.bind("<Control-a>", self.select_all_files)
         self.tree.bind("<Control-A>", self.select_all_files)
+        self.tree.bind("<<TreeviewSelect>>", self.update_details_panel)
+        self.tree.bind("<<TreeviewOpen>>", self.on_treeview_open)
+        self.tree.bind("<<TreeviewClose>>", self.on_treeview_close)
+
+        detail_frame = ttk.LabelFrame(self.root, text=" 当前选中详情 ", padding=8)
+        detail_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        self.detail_left_var = tk.StringVar(value="")
+        self.detail_right_var = tk.StringVar(value="")
+
+        detail_body = ttk.Frame(detail_frame)
+        detail_body.pack(fill=tk.X, expand=True)
+        detail_body.columnconfigure(0, weight=1)
+        detail_body.columnconfigure(2, weight=1)
+
+        left_panel = ttk.Frame(detail_body)
+        left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+
+        separator = ttk.Separator(detail_body, orient=tk.VERTICAL)
+        separator.grid(row=0, column=1, sticky="ns")
+
+        right_panel = ttk.Frame(detail_body)
+        right_panel.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
+
+        self.detail_left_label = ttk.Label(
+            left_panel,
+            textvariable=self.detail_left_var,
+            justify=tk.LEFT,
+            anchor="nw",
+        )
+        self.detail_left_label.pack(fill=tk.X, expand=True)
+
+        self.detail_right_label = ttk.Label(
+            right_panel,
+            textvariable=self.detail_right_var,
+            justify=tk.LEFT,
+            anchor="nw",
+        )
+        self.detail_right_label.pack(fill=tk.X, expand=True)
+
+        detail_body.bind("<Configure>", self._on_detail_body_resize)
 
         # 底部按钮和进度条
         bot = ttk.Frame(self.root, padding=10)
@@ -412,13 +468,16 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.btn_pre.pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
-            bot, text="2. 原地重命名", command=lambda: self.start_run_logic(False)
+            bot, text="2. 原地重命名", command=lambda: self.start_run_logic("rename")
         ).pack(side=tk.LEFT, padx=5)
         ttk.Button(
-            bot, text="3. 归档移动", command=lambda: self.start_run_logic(True)
+            bot, text="3. 归档移动", command=lambda: self.start_run_logic("archive")
         ).pack(side=tk.LEFT, padx=5)
         ttk.Button(
-            bot, text="4. 刮削", command=self.start_scrape_logic
+            bot, text="4. 原地整理", command=lambda: self.start_run_logic("organize")
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            bot, text="5. 刮削", command=self.start_scrape_logic
         ).pack(side=tk.LEFT, padx=5)
 
         self.pbar = ttk.Progressbar(bot, mode="determinate")
@@ -426,14 +485,522 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
         self.status = ttk.Label(bot, text="就绪")
         self.status.pack(side=tk.RIGHT)
+        self.refresh_tree_view(preserve_selection=False)
+        self._set_details_content("当前没有选中任何分组或文件。", "")
+
+    def _new_item_id(self):
+        """Return a stable Treeview/file identifier."""
+        self._item_seq += 1
+        return f"file::{self._item_seq}"
+
+    def _normalize_strip_keywords_text(self, value):
+        """Normalize strip-keyword config values to one display string."""
+        if isinstance(value, (list, tuple, set)):
+            items = [str(v).strip() for v in value if str(v).strip()]
+            return " | ".join(items)
+        return str(value or "").strip()
+
+    def _get_strip_keywords(self):
+        """Return normalized strip keywords as an ordered list."""
+        raw = str(self.strip_keywords_var.get() or "")
+        parts = re.split(r"[\r\n,|]+", raw)
+        seen = set()
+        items = []
+        for part in parts:
+            text = part.strip()
+            if not text:
+                continue
+            key = text.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(text)
+        return items
+
+    def _has_ai_backend_configured(self):
+        """Return whether at least one usable AI backend is configured."""
+        if self.prefer_ollama.get():
+            if self.ollama_url.get().strip() and self.ollama_model.get().strip():
+                return True
+            return bool(self.sf_api_key.get().strip())
+        return bool(self.sf_api_key.get().strip())
+
+    def _build_library_target_path(self, item, root_d):
+        """Build a Kodi/Jellyfin-style organized target path under root_d."""
+        root_dir = str(root_d or "").strip()
+        if not root_dir:
+            return os.path.join(item.dir, item.new_name_only or item.old_name)
+
+        metadata = item.metadata or {}
+        media_id = str(metadata.get("id") or "None").strip()
+        if media_id == "None":
+            return os.path.join(item.dir, item.new_name_only or item.old_name)
+
+        title = safe_filename(
+            str(metadata.get("title") or item.display_title or item.old_name).strip()
+        )
+        year_text = safe_str(metadata.get("year"))
+        provider = str(metadata.get("provider") or "tmdb").strip().lower()
+        id_tag = f"bgmid={media_id}" if provider == "bgm" else f"tmdbid={media_id}"
+        filename = item.new_name_only or item.old_name
+
+        if str(metadata.get("type") or "episode").strip().lower() == "episode":
+            season_num = safe_int(metadata.get("s"), 1)
+            folder_name = safe_filename(f"{title} [{id_tag}]")
+            return os.path.join(root_dir, folder_name, f"Season {season_num}", filename)
+
+        if year_text:
+            folder_name = safe_filename(f"{title} ({year_text}) [{id_tag}]")
+        else:
+            folder_name = safe_filename(f"{title} [{id_tag}]")
+        return os.path.join(root_dir, folder_name, filename)
+
+    def _build_target_for_mode(self, item, run_mode):
+        """Resolve the effective filesystem target for one run mode."""
+        if run_mode == "archive" and item.full_target:
+            return item.full_target
+        if run_mode == "organize":
+            source_root = item.organize_root or item.source_path or item.dir
+            return self._build_library_target_path(item, source_root)
+        return os.path.join(item.dir, item.new_name_only or item.old_name)
+
+    def get_item_by_id(self, item_id):
+        """Look up one media item by its stable identifier."""
+        return self.item_by_id.get(item_id)
+
+    def is_source_row(self, row_id):
+        """Return whether a row id belongs to a source-path node."""
+        return str(row_id or "").startswith("source::")
+
+    def is_season_row(self, row_id):
+        """Return whether a row id belongs to a season subgroup node."""
+        return str(row_id or "").startswith("season::")
+
+    def is_group_row(self, row_id):
+        """Return whether a row id belongs to any non-file grouping node."""
+        return self.is_source_row(row_id) or self.is_season_row(row_id)
+
+    def source_path_from_row_id(self, row_id):
+        """Extract source path from a group row identifier."""
+        if self.is_source_row(row_id):
+            return str(row_id).split("source::", 1)[1]
+        if self.is_season_row(row_id):
+            payload = str(row_id).split("season::", 1)[1]
+            return payload.split("||", 1)[0]
+        return ""
+
+    def season_key_from_row_id(self, row_id):
+        """Extract season subgroup key from a season row identifier."""
+        if not self.is_season_row(row_id):
+            return ""
+        payload = str(row_id).split("season::", 1)[1]
+        parts = payload.split("||", 1)
+        return parts[1] if len(parts) == 2 else ""
+
+    def _source_row_id(self, source_path):
+        """Build the Treeview id for a top-level source path."""
+        return f"source::{source_path}"
+
+    def _season_row_id(self, source_path, season_key):
+        """Build the Treeview id for a season subgroup."""
+        return f"season::{source_path}||{season_key}"
+
+    def _group_items(self, group_path):
+        """Return all files that belong to one grouped source path."""
+        return [item for item in self.file_list if item.source_path == group_path]
+
+    def _season_group_label(self, item):
+        """Return the second-level subgroup label under one source path."""
+        source_path = item.source_path or item.dir
+        rel_dir = ""
+        try:
+            rel_dir = os.path.relpath(item.dir, source_path)
+        except Exception:
+            rel_dir = ""
+
+        if not rel_dir or rel_dir in (".", ""):
+            return "根目录文件"
+
+        first_part = str(rel_dir).split(os.sep, 1)[0].strip()
+        return first_part or "根目录文件"
+
+    def _season_groups_for_source(self, source_path):
+        """Return ordered season subgroups and their items for one source path."""
+        groups = {}
+        order = []
+        for item in self._group_items(source_path):
+            label = self._season_group_label(item)
+            if label not in groups:
+                groups[label] = []
+                order.append(label)
+            groups[label].append(item)
+        return [(label, groups[label]) for label in order]
+
+    def _use_flat_source_layout(self, source_path):
+        """Return whether one source path should show files directly under root."""
+        season_groups = self._season_groups_for_source(source_path)
+        return len(season_groups) == 1 and season_groups[0][0] == "根目录文件"
+
+    def get_selected_file_ids(self):
+        """Return selected file row ids only."""
+        return [row_id for row_id in self.tree.selection() if self.get_item_by_id(row_id)]
+
+    def _collect_file_descendants(self, row_id):
+        """Collect all file-node descendants under one tree row."""
+        if not row_id or not self.tree.exists(row_id):
+            return []
+
+        item = self.get_item_by_id(row_id)
+        if item:
+            return [item.id]
+
+        result = []
+        for child_id in self.tree.get_children(row_id):
+            result.extend(self._collect_file_descendants(child_id))
+        return result
+
+    def _selection_scope_row_for_ctrl_a(self):
+        """Resolve which row should define Ctrl+A scope in grouped view."""
+        focus_row = self.tree.focus()
+        if focus_row and self.tree.exists(focus_row):
+            return focus_row
+
+        selection = self.tree.selection()
+        return selection[0] if selection else ""
+
+    def _resolve_current_action_scope(self):
+        """Resolve the file subset targeted by the bottom action buttons."""
+        if not self.file_list:
+            return [], [], "全部文件"
+
+        scope_row = self._selection_scope_row_for_ctrl_a()
+        if not scope_row or not self.tree.exists(scope_row):
+            indices = list(range(len(self.file_list)))
+            return indices, list(self.file_list), "全部文件"
+
+        if self.get_item_by_id(scope_row):
+            scope_row = self.tree.parent(scope_row) or scope_row
+
+        file_ids = self._collect_file_descendants(scope_row)
+        if not file_ids:
+            indices = list(range(len(self.file_list)))
+            return indices, list(self.file_list), "全部文件"
+
+        id_to_index = {item.id: idx for idx, item in enumerate(self.file_list)}
+        items = []
+        indices = []
+        for file_id in file_ids:
+            item = self.get_item_by_id(file_id)
+            idx = id_to_index.get(file_id)
+            if item is None or idx is None:
+                continue
+            items.append(item)
+            indices.append(idx)
+
+        scope_label = self.tree.item(scope_row, "text") or "当前分组"
+        return indices, items, scope_label
+
+    def _item_values(self, item):
+        """Build the visible column values for one file row."""
+        return (
+            item.display_title,
+            item.display_match_id,
+            item.display_target,
+            item.status_text,
+        )
+
+    def refresh_tree_view(self, preserve_selection=True):
+        """Rebuild the grouped tree view."""
+        selected_ids = set(self.get_selected_file_ids()) if preserve_selection else set()
+        focused = self.tree.focus() if preserve_selection else ""
+
+        for row_id in self.tree.get_children():
+            self.tree.delete(row_id)
+
+        self.tree.heading("#0", text="添加路径 / Season / 原文件名")
+        group_order = []
+        seen = set()
+        selected_sources = set()
+        selected_seasons = set()
+        for item_id in selected_ids:
+            selected_item = self.get_item_by_id(item_id)
+            if not selected_item:
+                continue
+            source_path = selected_item.source_path or selected_item.dir
+            season_key = self._season_group_label(selected_item)
+            selected_sources.add(self._source_row_id(source_path))
+            selected_seasons.add(self._season_row_id(source_path, season_key))
+        for item in self.file_list:
+            group_path = item.source_path or item.dir
+            if group_path not in seen:
+                seen.add(group_path)
+                group_order.append(group_path)
+
+        for group_path in group_order:
+            group_iid = self._source_row_id(group_path)
+            self.tree.insert(
+                "",
+                tk.END,
+                iid=group_iid,
+                text=group_path,
+                open=(group_iid in self.expanded_groups or group_iid in selected_sources),
+                values=("", "", "", ""),
+            )
+            if self._use_flat_source_layout(group_path):
+                for item in self._group_items(group_path):
+                    self.tree.insert(
+                        group_iid,
+                        tk.END,
+                        iid=item.id,
+                        text=item.old_name,
+                        values=self._item_values(item),
+                    )
+                continue
+            for season_label, items in self._season_groups_for_source(group_path):
+                season_iid = self._season_row_id(group_path, season_label)
+                self.tree.insert(
+                    group_iid,
+                    tk.END,
+                    iid=season_iid,
+                    text=season_label,
+                    open=(
+                        season_iid in self.expanded_groups
+                        or season_iid in selected_seasons
+                    ),
+                    values=("", "", "", ""),
+                )
+                for item in items:
+                    self.tree.insert(
+                        season_iid,
+                        tk.END,
+                        iid=item.id,
+                        text=item.old_name,
+                        values=self._item_values(item),
+                    )
+
+        existing_selected = [item_id for item_id in selected_ids if self.tree.exists(item_id)]
+        if existing_selected:
+            self.tree.selection_set(existing_selected)
+            self.tree.focus(existing_selected[0])
+        elif focused and self.tree.exists(focused):
+            self.tree.focus(focused)
+
+        self.update_details_panel()
+
+    def refresh_item_row(self, item_id):
+        """Refresh one file row in the active tree if it is visible."""
+        item = self.get_item_by_id(item_id)
+        if not item or not self.tree.exists(item.id):
+            self.update_details_panel()
+            return
+
+        self.tree.item(item.id, text=item.old_name, values=self._item_values(item))
+        self.update_details_panel()
+
+    def update_item_display(
+        self,
+        item_or_id,
+        *,
+        old_name=None,
+        title=None,
+        match_id=None,
+        target=None,
+        status=None,
+    ):
+        """Update cached UI text for one item and refresh the visible row."""
+        item = (
+            item_or_id
+            if isinstance(item_or_id, MediaItem)
+            else self.get_item_by_id(item_or_id)
+        )
+        if not item:
+            return
+
+        if old_name is not None:
+            item.old_name = old_name
+        if title is not None:
+            item.display_title = str(title)
+        if match_id is not None:
+            item.display_match_id = str(match_id)
+        if target is not None:
+            item.display_target = str(target)
+        if status is not None:
+            item.status_text = str(status)
+
+        self.refresh_item_row(item.id)
+
+    def _on_detail_body_resize(self, event):
+        """Keep left/right detail blocks wrapped to the available width."""
+        column_width = max(220, int((event.width - 32) / 2))
+        self.detail_left_label.configure(wraplength=column_width)
+        self.detail_right_label.configure(wraplength=column_width)
+
+    def _set_details_text(self, text):
+        """Backward-compatible single-column detail update helper."""
+        self._set_details_content(text, "")
+
+    def _set_details_content(self, left_text, right_text):
+        """Render wrapped details text inside the lower two-column panel."""
+        self.detail_left_var.set((left_text or "").strip())
+        self.detail_right_var.set((right_text or "").strip())
+
+    def _build_group_details(self, group_path):
+        """Build the wrapped details blocks for one grouped path."""
+        items = self._group_items(group_path)
+        if not items:
+            return (
+                f"添加路径:\n{group_path}\n\n该分组当前没有文件。",
+                "",
+            )
+
+        recognized = sum(1 for item in items if item.metadata.get("id") != "None")
+        pending = sum(1 for item in items if item.status_text in ("待命", "识别中"))
+        done = sum(
+            1
+            for item in items
+            if item.status_text
+            in ("重命名完成", "归档完成", "原地整理完成", "原地整理+刮削完成", "刮削完成")
+        )
+
+        left_text = (
+            f"添加路径:\n{group_path}\n\n"
+            f"文件数量: {len(items)}\n"
+            f"已识别: {recognized}\n"
+            f"进行中/待命: {pending}\n"
+            f"已完成: {done}"
+        )
+        if self._use_flat_source_layout(group_path):
+            sample_lines = [item.old_name for item in items[:12]]
+            if len(items) > 12:
+                sample_lines.append(f"... 还有 {len(items) - 12} 个文件")
+            right_text = "当前目录文件:\n" + "\n".join(sample_lines)
+        else:
+            season_lines = []
+            for season_label, season_items in self._season_groups_for_source(group_path):
+                season_lines.append(f"{season_label}: {len(season_items)} 个文件")
+            right_text = "Season 分组:\n" + ("\n".join(season_lines) if season_lines else "(无)")
+        return left_text, right_text
+
+    def _build_season_group_details(self, source_path, season_key):
+        """Build the wrapped details blocks for one season subgroup."""
+        items = [
+            item
+            for item in self._group_items(source_path)
+            if self._season_group_label(item) == season_key
+        ]
+        if not items:
+            return (
+                f"添加路径:\n{source_path}\n\nSeason 分组:\n{season_key}\n\n该分组当前没有文件。",
+                "",
+            )
+
+        recognized = sum(1 for item in items if item.metadata.get("id") != "None")
+        pending = sum(1 for item in items if item.status_text in ("待命", "识别中"))
+        done = sum(
+            1
+            for item in items
+            if item.status_text
+            in ("重命名完成", "归档完成", "原地整理完成", "原地整理+刮削完成", "刮削完成")
+        )
+        sample_lines = [item.old_name for item in items[:12]]
+        if len(items) > 12:
+            sample_lines.append(f"... 还有 {len(items) - 12} 个文件")
+
+        left_text = (
+            f"添加路径:\n{source_path}\n\n"
+            f"Season 分组:\n{season_key}\n\n"
+            f"文件数量: {len(items)}\n"
+            f"已识别: {recognized}\n"
+            f"进行中/待命: {pending}\n"
+            f"已完成: {done}"
+        )
+        right_text = "当前 Season 文件:\n" + "\n".join(sample_lines)
+        return left_text, right_text
+
+    def _build_item_details(self, item):
+        """Build the wrapped details blocks for one selected file."""
+        title = item.display_title or "(未识别)"
+        match_id = item.display_match_id or "(无)"
+        target = item.display_target or "(尚未生成)"
+        status = item.status_text or "待命"
+        source_path = item.source_path or item.dir
+        full_path = item.path or ""
+        left_text = (
+            f"原文件名:\n{item.old_name}\n\n"
+            f"原始完整路径:\n{full_path}\n\n"
+            f"所属添加路径:\n{source_path}"
+        )
+        right_text = (
+            f"识别标题:\n{title}\n\n"
+            f"识别来源:\n{item.parse_source or '(未记录)'}\n\n"
+            f"匹配 ID:\n{match_id}\n\n"
+            f"新文件名 / 归档路径:\n{target}\n\n"
+            f"状态:\n{status}"
+        )
+        return left_text, right_text
+
+    def update_details_panel(self, _event=None):
+        """Refresh the lower details panel based on current selection."""
+        selection = self.tree.selection()
+        if not selection:
+            self._set_details_content("当前没有选中任何分组或文件。", "")
+            return
+
+        row_id = selection[0]
+        if self.is_source_row(row_id):
+            self._set_details_content(
+                *self._build_group_details(self.source_path_from_row_id(row_id))
+            )
+            return
+
+        if self.is_season_row(row_id):
+            self._set_details_content(
+                *self._build_season_group_details(
+                    self.source_path_from_row_id(row_id),
+                    self.season_key_from_row_id(row_id),
+                )
+            )
+            return
+
+        item = self.get_item_by_id(row_id)
+        if not item:
+            self._set_details_content("当前选中项已失效，请重新选择。", "")
+            return
+
+        self._set_details_content(*self._build_item_details(item))
+
+    def on_treeview_open(self, _event=None):
+        """Persist group expanded state while using grouped view."""
+        row_id = self.tree.focus()
+        if self.is_group_row(row_id):
+            self.expanded_groups.add(row_id)
+
+    def on_treeview_close(self, _event=None):
+        """Persist group collapsed state while using grouped view."""
+        row_id = self.tree.focus()
+        if self.is_group_row(row_id):
+            self.expanded_groups.discard(row_id)
+
+    def toggle_group_row(self, row_id):
+        """Toggle one grouped path row and persist its open state."""
+        if not self.is_group_row(row_id) or not self.tree.exists(row_id):
+            return
+
+        new_state = not bool(self.tree.item(row_id, "open"))
+        self.tree.item(row_id, open=new_state)
+        if new_state:
+            self.expanded_groups.add(row_id)
+        else:
+            self.expanded_groups.discard(row_id)
 
     def open_settings(self):
         """打开设置窗口"""
         win = tk.Toplevel(self.root)
         win.title("高级设置与 API 配置")
         win.transient(self.root)
-        center_window(win, self.root, 650, 650)
-        win.after_idle(lambda: center_window(win, self.root, 650, 650))
+        center_window(win, self.root, 860, 760)
+        win.after_idle(lambda: center_window(win, self.root, 860, 760))
+        win.minsize(760, 620)
         win.grab_set()
         win.focus_set()
 
@@ -451,6 +1018,10 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
         f = ttk.Frame(canvas, padding=20)
         canvas_window = canvas.create_window((0, 0), window=f, anchor="nw")
+        f.columnconfigure(0, weight=0, minsize=210)
+        f.columnconfigure(1, weight=1)
+        f.columnconfigure(2, weight=0, minsize=120)
+        wrap_labels = []
 
         def _sync_scrollregion(_event=None):
             canvas.configure(scrollregion=canvas.bbox("all"))
@@ -458,10 +1029,23 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         def _sync_canvas_width(event):
             canvas.itemconfigure(canvas_window, width=event.width)
 
+        def _wrap_label(label, minimum=260):
+            wrap_labels.append((label, minimum))
+            return label
+
+        def _update_wrap_labels(_event=None):
+            label_col_width = max(180, f.grid_columnconfigure(0).get("minsize", 210))
+            action_col_width = max(110, f.grid_columnconfigure(2).get("minsize", 120))
+            available = max(minimum for _label, minimum in wrap_labels) if wrap_labels else 260
+            current = max(available, f.winfo_width() - label_col_width - action_col_width - 80)
+            for label, minimum in wrap_labels:
+                label.configure(wraplength=max(minimum, current))
+
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         f.bind("<Configure>", _sync_scrollregion)
+        f.bind("<Configure>", _update_wrap_labels, add="+")
         canvas.bind("<Configure>", _sync_canvas_width)
         canvas.bind(
             "<Enter>", lambda _e: canvas.bind_all("<MouseWheel>", _on_mousewheel)
@@ -472,82 +1056,118 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
         # API 配置
         ttk.Label(f, text="TMDb API Key:").grid(row=row, column=0, sticky=tk.W, pady=5)
-        tmdb_key_entry = ttk.Entry(f, textvariable=self.tmdb_api_key, width=45, show="*")
-        tmdb_key_entry.grid(row=row, column=1, pady=5, padx=10)
+        tmdb_key_entry = ttk.Entry(f, textvariable=self.tmdb_api_key, show="*")
+        tmdb_key_entry.grid(row=row, column=1, sticky="ew", pady=5, padx=10)
         tmdb_key_btn = ttk.Button(f, text="显示", width=6)
         tmdb_key_btn.config(
             command=lambda e=tmdb_key_entry, b=tmdb_key_btn: self._toggle_entry_visibility(e, b)
         )
-        tmdb_key_btn.grid(row=row, column=2, sticky=tk.W, pady=5)
+        tmdb_key_btn.grid(row=row, column=2, sticky="w", pady=5)
         row += 1
 
         ttk.Label(f, text="BGM API Key:").grid(row=row, column=0, sticky=tk.W, pady=5)
-        bgm_key_entry = ttk.Entry(f, textvariable=self.bgm_api_key, width=45, show="*")
-        bgm_key_entry.grid(row=row, column=1, pady=5, padx=10)
+        bgm_key_entry = ttk.Entry(f, textvariable=self.bgm_api_key, show="*")
+        bgm_key_entry.grid(row=row, column=1, sticky="ew", pady=5, padx=10)
         bgm_key_btn = ttk.Button(f, text="显示", width=6)
         bgm_key_btn.config(
             command=lambda e=bgm_key_entry, b=bgm_key_btn: self._toggle_entry_visibility(e, b)
         )
-        bgm_key_btn.grid(row=row, column=2, sticky=tk.W, pady=5)
+        bgm_key_btn.grid(row=row, column=2, sticky="w", pady=5)
         row += 1
 
         ttk.Label(f, text="Silicon AI Key (备选):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        sf_key_entry = ttk.Entry(f, textvariable=self.sf_api_key, width=45, show="*")
-        sf_key_entry.grid(row=row, column=1, pady=5, padx=10)
+        sf_key_entry = ttk.Entry(f, textvariable=self.sf_api_key, show="*")
+        sf_key_entry.grid(row=row, column=1, sticky="ew", pady=5, padx=10)
         sf_key_btn = ttk.Button(f, text="显示", width=6)
         sf_key_btn.config(
             command=lambda e=sf_key_entry, b=sf_key_btn: self._toggle_entry_visibility(e, b)
         )
-        sf_key_btn.grid(row=row, column=2, sticky=tk.W, pady=5)
+        sf_key_btn.grid(row=row, column=2, sticky="w", pady=5)
         row += 1
 
         ttk.Label(f, text="API URL (OpenAI兼容):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.sf_api_url, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.sf_api_url).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         ttk.Button(
             f,
             text="测试连接",
             command=lambda: self._test_silicon_api(sf_test_status_var),
-        ).grid(row=row, column=2, sticky=tk.W, pady=5)
+        ).grid(row=row, column=2, sticky="w", pady=5)
         row += 1
 
         sf_test_status_var = tk.StringVar(value="")
-        ttk.Label(f, textvariable=sf_test_status_var).grid(
-            row=row, column=1, sticky=tk.W, padx=10
+        _wrap_label(
+            ttk.Label(f, textvariable=sf_test_status_var, justify=tk.LEFT)
+        ).grid(
+            row=row, column=1, columnspan=2, sticky="ew", padx=10
         )
         row += 1
 
         ttk.Label(f, text="模型名称:").grid(row=row, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(f, textvariable=self.sf_model, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.sf_model).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
         ttk.Label(f, text="AI 温度 temperature (0-2):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.ai_temperature, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.ai_temperature).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
         ttk.Label(f, text="AI top_p (0-1):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.ai_top_p, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.ai_top_p).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
+        row += 1
+
+        ttk.Label(f, text="AI 识别模式:").grid(row=row, column=0, sticky=tk.W, pady=5)
+        mode_wrap = ttk.Frame(f)
+        mode_wrap.grid(row=row, column=1, columnspan=2, sticky="w", pady=5, padx=10)
+        ttk.Radiobutton(
+            mode_wrap, text="禁用", variable=self.ai_mode, value="disabled"
+        ).pack(side=tk.LEFT)
+        ttk.Radiobutton(
+            mode_wrap, text="辅助识别", variable=self.ai_mode, value="assist"
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Radiobutton(
+            mode_wrap, text="强制使用", variable=self.ai_mode, value="force"
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        row += 1
+
+        _wrap_label(
+            ttk.Label(
+                f,
+                text="禁用：只用文件名猜测；辅助识别：先 guessit，搜不到再让 AI 重提标题；强制使用：只走 AI。",
+                justify=tk.LEFT,
+            ),
+            minimum=320,
+        ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=(0, 5), padx=10)
+        row += 1
+
+        ttk.Label(f, text="剔除关键词:").grid(row=row, column=0, sticky=tk.W, pady=5)
+        ttk.Entry(f, textvariable=self.strip_keywords_var).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
+        )
+        _wrap_label(
+            ttk.Label(f, text="多个关键词可用 | 或逗号分隔", justify=tk.LEFT),
+            minimum=120,
+        ).grid(row=row, column=2, sticky="w", pady=5)
         row += 1
 
         # Ollama 配置
         ttk.Label(f, text="Ollama URL:").grid(row=row, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(f, textvariable=self.ollama_url, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.ollama_url).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         ttk.Button(
             f,
@@ -555,16 +1175,15 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             command=lambda: self._refresh_ollama_model_options(
                 ollama_model_combo, embedding_model_combo, ollama_status_var, True
             ),
-        ).grid(row=row, column=2, sticky=tk.W, pady=5)
+        ).grid(row=row, column=2, sticky="w", pady=5)
         row += 1
 
         ttk.Label(f, text="Ollama 模型:").grid(row=row, column=0, sticky=tk.W, pady=5)
         ollama_model_combo = ttk.Combobox(
             f,
             textvariable=self.ollama_model,
-            width=45,
         )
-        ollama_model_combo.grid(row=row, column=1, pady=5, padx=10)
+        ollama_model_combo.grid(row=row, column=1, sticky="ew", pady=5, padx=10)
         row += 1
 
         ttk.Label(f, text="Embedding 模型:").grid(
@@ -573,14 +1192,15 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         embedding_model_combo = ttk.Combobox(
             f,
             textvariable=self.embedding_model,
-            width=45,
         )
-        embedding_model_combo.grid(row=row, column=1, pady=5, padx=10)
+        embedding_model_combo.grid(row=row, column=1, sticky="ew", pady=5, padx=10)
         row += 1
 
         ollama_status_var = tk.StringVar(value="正在读取本地模型列表...")
-        ttk.Label(f, textvariable=ollama_status_var).grid(
-            row=row, column=1, sticky=tk.W, padx=10
+        _wrap_label(
+            ttk.Label(f, textvariable=ollama_status_var, justify=tk.LEFT)
+        ).grid(
+            row=row, column=1, columnspan=2, sticky="ew", padx=10
         )
         row += 1
 
@@ -588,37 +1208,37 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             f,
             text="优先使用本地 Ollama (失败后自动尝试 SiliconFlow)",
             variable=self.prefer_ollama,
-        ).grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=5)
+        ).grid(row=row, column=0, columnspan=3, sticky=tk.W, pady=5)
         row += 1
 
         ttk.Checkbutton(
             f,
             text="启用 Embedding 候选重排 (提升多候选识别率)",
             variable=self.use_embedding_rank,
-        ).grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=5)
+        ).grid(row=row, column=0, columnspan=3, sticky=tk.W, pady=5)
         row += 1
 
         ttk.Label(f, text="预览并发线程数 (1-10):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.preview_workers, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.preview_workers).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
         ttk.Label(f, text="批量同步并发线程数 (1-10):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.sync_workers, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.sync_workers).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
         ttk.Label(f, text="执行并发线程数 (1-10):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.execution_workers, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.execution_workers).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
@@ -626,16 +1246,16 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Label(f, text="剧集 (TV) 格式:").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.tv_format, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.tv_format).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
         ttk.Label(f, text="电影 (Movie) 格式:").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.movie_format, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.movie_format).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
@@ -643,37 +1263,41 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Label(f, text="视频扩展名 (逗号分隔):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.video_exts, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.video_exts).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
         ttk.Label(f, text="字幕/音频扩展名 (逗号):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.sub_audio_exts, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.sub_audio_exts).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
         ttk.Label(f, text="语言标签 (竖线|分隔):").grid(
             row=row, column=0, sticky=tk.W, pady=5
         )
-        ttk.Entry(f, textvariable=self.lang_tags, width=45).grid(
-            row=row, column=1, pady=5, padx=10
+        ttk.Entry(f, textvariable=self.lang_tags).grid(
+            row=row, column=1, sticky="ew", pady=5, padx=10
         )
         row += 1
 
         # 保存按钮
+        action_bar = ttk.Frame(f)
+        action_bar.grid(row=row, column=0, columnspan=3, sticky="ew", pady=15)
+        action_bar.columnconfigure(0, weight=1)
         ttk.Button(
-            f,
+            action_bar,
             text="保存并生效 (无需重启)",
             command=lambda: [self.save_config(), win.destroy()],
-        ).grid(row=row, column=1, sticky=tk.E, pady=15)
+        ).grid(row=0, column=1, sticky="e")
 
         self._refresh_ollama_model_options(
             ollama_model_combo, embedding_model_combo, ollama_status_var, False
         )
+        win.after_idle(_update_wrap_labels)
 
     def _set_ollama_combobox_values(self, combobox, current_value, values):
         """更新下拉框候选值，同时保留当前值。"""
@@ -977,6 +1601,31 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             if len(merged) >= 10:
                 break
 
+        bgm_fallback = False
+        if not merged and mode == "siliconflow_tmdb":
+            for q in query_titles:
+                cur = fetch_bgm_candidates(q, year, self.bgm_api_key.get())
+                if not cur:
+                    continue
+
+                if not _first_hit:
+                    used_query = q
+                    _first_hit = True
+
+                for cand in cur:
+                    cid = str(cand.get("id") or "")
+                    if not cid or cid in seen_ids:
+                        continue
+                    seen_ids.add(cid)
+                    merged.append(cand)
+
+                if len(merged) >= 10:
+                    break
+
+            if merged:
+                bgm_fallback = True
+                source_name = "BGM(回退)"
+
         if merged:
             t_hit, tid_hit, msg_hit, meta_hit = self._select_best_db_match(
                 item,
@@ -991,6 +1640,8 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 used_query
             ) != normalize_compare_text(query_title):
                 msg_hit += " (备选标题)"
+            if bgm_fallback and tid_hit != "None":
+                meta_hit["_provider"] = "bgm"
             return t_hit, tid_hit, msg_hit, meta_hit
 
         return query_title, "None", f"{source_name}无结果", {}
@@ -1055,26 +1706,24 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             messagebox.showwarning("警告", "请先添加文件", parent=self.root)
             return
 
-        if self.prefer_ollama.get():
-            if not self.ollama_url.get().strip() or not self.ollama_model.get().strip():
-                messagebox.showwarning(
-                    "Ollama配置不完整",
-                    "您选择了优先使用本地Ollama，但未填写Ollama URL或模型。请先完成配置或切换回SiliconFlow。",
-                    parent=self.root,
-                )
-                return
-        else:
-            if not self.sf_api_key.get().strip():
-                messagebox.showwarning(
-                    "缺少API密钥",
-                    "请先配置SiliconFlow API Key或启用Ollama。",
-                    parent=self.root,
-                )
-                return
+        scope_indices, scope_items, scope_label = self._resolve_current_action_scope()
+        if not scope_items:
+            messagebox.showwarning("警告", "当前作用域内没有可处理的文件", parent=self.root)
+            return
 
+        ai_mode = str(self.ai_mode.get() or "assist").strip().lower()
+        if ai_mode == "force" and not self._has_ai_backend_configured():
+            messagebox.showwarning(
+                "AI配置不完整",
+                "当前选择了强制使用AI，但尚未配置可用的 Ollama 或 OpenAI 兼容接口。",
+                parent=self.root,
+            )
+            return
+
+        self.action_scope_item_ids = [item.id for item in scope_items]
         self.btn_pre.config(state=tk.DISABLED)
         self.pbar["value"] = 0
-        self.status.config(text="识别中...")
+        self.status.config(text=f"识别中: {scope_label}")
         self.preview_skip_all_event.clear()
         self.preview_skip_dirs.clear()
 
@@ -1088,16 +1737,26 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         """处理单个任务"""
         return worker_process_task(self, i)
 
-    def start_run_logic(self, is_archive):
+    def start_run_logic(self, run_mode):
         """开始重命名逻辑"""
         if not self.file_list:
             return
 
+        _scope_indices, scope_items, scope_label = self._resolve_current_action_scope()
+        if not scope_items:
+            messagebox.showwarning("警告", "当前作用域内没有可处理的文件", parent=self.root)
+            return
+
         unprocessed = sum(
-            1 for item in self.file_list if item.metadata.get("id") == "None"
+            1 for item in scope_items if item.metadata.get("id") == "None"
         )
         if unprocessed:
-            op = "归档" if is_archive else "重命名"
+            op_map = {
+                "rename": "重命名",
+                "archive": "归档",
+                "organize": "原地整理",
+            }
+            op = op_map.get(run_mode, "处理")
             ok = messagebox.askokcancel(
                 "部分文件未预览",
                 f"有 {unprocessed} 个文件尚未完成识别预览，将被跳过，其余已识别的文件正常{op}。\n\n是否继续？",
@@ -1106,8 +1765,10 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             if not ok:
                 return
 
+        self.action_scope_item_ids = [item.id for item in scope_items]
+        self.status.config(text=f"准备处理: {scope_label}")
         threading.Thread(
-            target=self.run_execution, args=(is_archive,), daemon=True
+            target=self.run_execution, args=(run_mode,), daemon=True
         ).start()
 
     def start_scrape_logic(self):
@@ -1115,8 +1776,13 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         if not self.file_list:
             return
 
+        _scope_indices, scope_items, scope_label = self._resolve_current_action_scope()
+        if not scope_items:
+            messagebox.showwarning("警告", "当前作用域内没有可处理的文件", parent=self.root)
+            return
+
         unprocessed = sum(
-            1 for item in self.file_list if item.metadata.get("id") == "None"
+            1 for item in scope_items if item.metadata.get("id") == "None"
         )
         if unprocessed:
             ok = messagebox.askokcancel(
@@ -1127,21 +1793,23 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             if not ok:
                 return
 
+        self.action_scope_item_ids = [item.id for item in scope_items]
+        self.status.config(text=f"准备刮削: {scope_label}")
         threading.Thread(
             target=self.run_scrape_execution, daemon=True
         ).start()
 
-    def run_execution(self, is_archive):
+    def run_execution(self, run_mode):
         """执行重命名"""
-        return worker_run_execution(self, is_archive)
+        return worker_run_execution(self, run_mode)
 
     def run_scrape_execution(self):
         """执行独立刮削"""
         return worker_run_scrape_execution(self)
 
-    def process_one_file(self, item, is_archive):
+    def process_one_file(self, item, run_mode):
         """处理单个文件"""
-        return worker_process_one_file(self, item, is_archive)
+        return worker_process_one_file(self, item, run_mode)
 
     def process_one_file_scrape(self, item):
         """单独刮削单个文件"""
