@@ -2,6 +2,15 @@
 
 媒体文件重命名与刮削工具（Tkinter GUI，模块化版本）。
 
+命名模板可用变量说明：
+- [GitHub Wiki - 命名模板可用变量](https://github.com/shai102/media-renamer-ai/wiki/Naming-Template-Variables)
+
+界面预览：
+
+![主界面预览](1.png)
+
+![设置与模板预览](2.png)
+
 当前版本已经从早期的平铺列表，演进为更适合批量目录整理的分组树形工作流，重点面向：
 
 - 动漫 / 剧集 / STRM 文件批量识别
