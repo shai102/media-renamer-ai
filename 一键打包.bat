@@ -4,7 +4,7 @@ echo      正在开始打包：媒体归档刮削助手
 echo ============================================
 
 :: 1. 执行打包
-pyinstaller --noconfirm --onefile --windowed --name "媒体归档刮削助手" --collect-all guessit --collect-all babelfish --collect-all Pillow --clean main.py
+pyinstaller --noconfirm --onefile --windowed --name "媒体归档刮削助手" --icon "assets\app_icon.ico" --collect-all guessit --collect-all babelfish --collect-all Pillow --clean main.py
 
 echo.
 echo --------------------------------------------

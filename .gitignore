@@ -13,3 +13,5 @@ api_cache.json
 media_renamer.log
 *.rar
 dist/
+build/
+*.spec

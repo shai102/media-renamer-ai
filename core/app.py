@@ -109,8 +109,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v2.0")
+        self.root.title("媒体归档刮削助手 v2.1")
         self.root.geometry("1300x900")
+        self.bootstrap_style = getattr(self.root, "style", None)
 
         self.file_list: list[MediaItem] = []
         self.item_by_id: dict[str, MediaItem] = {}
@@ -203,9 +204,124 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.ollama_embed_endpoint = None
         self.ollama_model_options = []
 
+        self._apply_cosmo_styles()
+        self._apply_app_icon()
         self.create_widgets()
         self.apply_saved_window_geometry()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def _theme_colors(self):
+        """Return a consistent color palette from ttkbootstrap when available."""
+        colors = getattr(self.bootstrap_style, "colors", None)
+        if colors is None:
+            return {
+                "bg": "#ffffff",
+                "surface": "#f8fbff",
+                "panel": "#eef5ff",
+                "border": "#d7e3f4",
+                "primary": "#2780e3",
+                "text": "#22313f",
+                "muted": "#697b8c",
+                "selected": "#d9eafb",
+                "selected_text": "#16324f",
+            }
+        return {
+            "bg": colors.bg,
+            "surface": "#f8fbff",
+            "panel": "#eef5ff",
+            "border": "#d7e3f4",
+            "primary": colors.primary,
+            "text": "#22313f",
+            "muted": "#697b8c",
+            "selected": "#d9eafb",
+            "selected_text": "#16324f",
+        }
+
+    def _apply_cosmo_styles(self):
+        """Configure a polished ttk/Treeview look on top of the Cosmo theme."""
+        self.colors = self._theme_colors()
+        self.root.configure(bg=self.colors["bg"])
+        self.root.option_add("*Font", "{Microsoft YaHei UI} 10")
+
+        style = ttk.Style()
+        style.configure(".", background=self.colors["bg"], foreground=self.colors["text"])
+        style.configure("App.TFrame", background=self.colors["bg"])
+        style.configure("Toolbar.TFrame", background=self.colors["surface"])
+        style.configure(
+            "Card.TLabelframe",
+            background=self.colors["bg"],
+            borderwidth=1,
+            relief="solid",
+            lightcolor=self.colors["border"],
+            darkcolor=self.colors["border"],
+            bordercolor=self.colors["border"],
+        )
+        style.configure(
+            "Card.TLabelframe.Label",
+            background=self.colors["bg"],
+            foreground=self.colors["primary"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        style.configure(
+            "Subtle.TLabel",
+            background=self.colors["bg"],
+            foreground=self.colors["muted"],
+        )
+        style.configure(
+            "DetailTitle.TLabel",
+            background=self.colors["bg"],
+            foreground=self.colors["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        style.configure(
+            "DetailBody.TLabel",
+            background=self.colors["bg"],
+            foreground=self.colors["text"],
+        )
+        style.configure("Action.TButton", padding=(12, 7))
+        style.configure("Compact.TButton", padding=(10, 6))
+        style.configure(
+            "App.Treeview",
+            rowheight=31,
+            padding=1,
+            background="#ffffff",
+            fieldbackground="#ffffff",
+            borderwidth=0,
+            relief="flat",
+            font=("Microsoft YaHei UI", 10),
+        )
+        style.configure(
+            "App.Treeview.Heading",
+            background=self.colors["panel"],
+            foreground=self.colors["text"],
+            relief="flat",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            padding=(8, 8),
+        )
+        style.map(
+            "App.Treeview",
+            background=[("selected", self.colors["selected"])],
+            foreground=[("selected", self.colors["selected_text"])],
+        )
+        style.map(
+            "App.Treeview.Heading",
+            background=[("active", self.colors["panel"])],
+            foreground=[("active", self.colors["text"])],
+        )
+
+    def _apply_app_icon(self):
+        """Apply the bundled app icon when present."""
+        icon_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "assets",
+            "app_icon.ico",
+        )
+        if not os.path.exists(icon_path):
+            return
+        try:
+            self.root.iconbitmap(icon_path)
+        except Exception:
+            pass
 
     def get_media_exts(self):
         """获取媒体文件扩展名"""
@@ -336,63 +452,128 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
     def create_widgets(self):
         """创建UI组件"""
         # 根目录选择
-        p_frame = ttk.LabelFrame(self.root, text=" 归档目标根目录 ", padding=5)
-        p_frame.pack(fill=tk.X, padx=10, pady=5)
+        p_frame = ttk.LabelFrame(
+            self.root, text=" 归档目标根目录 ", padding=10, style="Card.TLabelframe"
+        )
+        p_frame.pack(fill=tk.X, padx=12, pady=(12, 8))
         ttk.Entry(p_frame, textvariable=self.target_root).pack(
             side=tk.LEFT, fill=tk.X, expand=True, padx=5
         )
         ttk.Button(
             p_frame,
             text="选择目录",
+            style="primary.TButton",
             command=lambda: self.target_root.set(
                 filedialog.askdirectory(parent=self.root)
             ),
         ).pack(side=tk.LEFT, padx=5)
 
         # 顶部工具栏
-        top = ttk.Frame(self.root, padding=5)
-        top.pack(fill=tk.X, padx=5)
-        ttk.Button(top, text="添加文件", command=self.add_files).pack(
+        top = ttk.Frame(self.root, padding=(10, 8), style="Toolbar.TFrame")
+        top.pack(fill=tk.X, padx=12, pady=(0, 8))
+        left_tools = ttk.Frame(top, style="Toolbar.TFrame")
+        left_tools.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        right_tools = ttk.Frame(top, style="Toolbar.TFrame")
+        right_tools.pack(side=tk.RIGHT)
+
+        ttk.Button(
+            left_tools,
+            text="添加文件",
+            style="primary.TButton",
+            command=self.add_files,
+        ).pack(
             side=tk.LEFT, padx=5
         )
-        ttk.Button(top, text="添加文件夹", command=self.add_folder).pack(
+        ttk.Button(
+            left_tools,
+            text="添加文件夹",
+            style="secondary.TButton",
+            command=self.add_folder,
+        ).pack(
             side=tk.LEFT, padx=5
         )
-        ttk.Button(top, text="设置 / API", command=self.open_settings).pack(
-            side=tk.LEFT, padx=15
+        ttk.Button(
+            left_tools,
+            text="设置 / API",
+            style="info.TButton",
+            command=self.open_settings,
+        ).pack(
+            side=tk.LEFT, padx=(14, 5)
         )
 
         # 数据源选择
         self.source_var = tk.StringVar(value="siliconflow_tmdb")
+        source_box = ttk.LabelFrame(
+            left_tools, text=" 数据源 ", padding=(10, 6), style="Card.TLabelframe"
+        )
+        source_box.pack(side=tk.LEFT, padx=(14, 8))
         ttk.Radiobutton(
-            top, text="AI + TMDb", variable=self.source_var, value="siliconflow_tmdb"
+            source_box,
+            text="AI + TMDb",
+            variable=self.source_var,
+            value="siliconflow_tmdb",
         ).pack(side=tk.LEFT, padx=10)
         ttk.Radiobutton(
-            top,
+            source_box,
             text="AI + BGM (推荐)",
             variable=self.source_var,
             value="siliconflow_bgm",
         ).pack(side=tk.LEFT)
 
-        ttk.Label(top, text="类型:").pack(side=tk.LEFT, padx=(12, 4))
+        type_box = ttk.Frame(left_tools, style="Toolbar.TFrame")
+        type_box.pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(type_box, text="类型:", style="Subtle.TLabel").pack(
+            side=tk.LEFT, padx=(12, 4)
+        )
         ttk.Combobox(
-            top,
+            type_box,
             textvariable=self.media_type_override,
             values=("自动判断", "电影", "电视剧"),
             state="readonly",
             width=10,
         ).pack(side=tk.LEFT)
 
-        ttk.Button(top, text="清空列表(含缓存)", command=self.clear_list).pack(
+        ttk.Button(
+            right_tools,
+            text="清空列表(含缓存)",
+            style="danger.TButton",
+            command=self.clear_list,
+        ).pack(
             side=tk.RIGHT, padx=5
         )
 
         # 主表格
-        mid = ttk.Frame(self.root, padding=10)
+        mid_shell = ttk.LabelFrame(
+            self.root, text=" 目录与文件列表 ", padding=8, style="Card.TLabelframe"
+        )
+        mid_shell.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+        mid = ttk.Frame(mid_shell, style="App.TFrame")
         mid.pack(fill=tk.BOTH, expand=True)
         cols = ("title", "id", "new", "st")
         self.tree = ttk.Treeview(
-            mid, columns=cols, show="tree headings", selectmode="extended"
+            mid,
+            columns=cols,
+            show="tree headings",
+            selectmode="extended",
+            style="App.Treeview",
+        )
+        self.tree.tag_configure(
+            "source",
+            background="#eef5ff",
+            foreground=self.colors["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        self.tree.tag_configure(
+            "season",
+            background="#f7fbff",
+            foreground=self.colors["text"],
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        self.tree.tag_configure(
+            "file",
+            background="#ffffff",
+            foreground=self.colors["text"],
+            font=("Microsoft YaHei UI", 10),
         )
 
         self.tree.heading("#0", text="添加路径 / Season / 原文件名")
@@ -421,23 +602,25 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.tree.bind("<<TreeviewOpen>>", self.on_treeview_open)
         self.tree.bind("<<TreeviewClose>>", self.on_treeview_close)
 
-        detail_frame = ttk.LabelFrame(self.root, text=" 当前选中详情 ", padding=8)
-        detail_frame.pack(fill=tk.X, padx=10, pady=(0, 5))
+        detail_frame = ttk.LabelFrame(
+            self.root, text=" 当前选中详情 ", padding=10, style="Card.TLabelframe"
+        )
+        detail_frame.pack(fill=tk.X, padx=12, pady=(0, 8))
         self.detail_left_var = tk.StringVar(value="")
         self.detail_right_var = tk.StringVar(value="")
 
-        detail_body = ttk.Frame(detail_frame)
+        detail_body = ttk.Frame(detail_frame, style="App.TFrame")
         detail_body.pack(fill=tk.X, expand=True)
         detail_body.columnconfigure(0, weight=1)
         detail_body.columnconfigure(2, weight=1)
 
-        left_panel = ttk.Frame(detail_body)
+        left_panel = ttk.Frame(detail_body, style="App.TFrame")
         left_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
         separator = ttk.Separator(detail_body, orient=tk.VERTICAL)
         separator.grid(row=0, column=1, sticky="ns")
 
-        right_panel = ttk.Frame(detail_body)
+        right_panel = ttk.Frame(detail_body, style="App.TFrame")
         right_panel.grid(row=0, column=2, sticky="nsew", padx=(10, 0))
 
         self.detail_left_label = ttk.Label(
@@ -445,6 +628,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             textvariable=self.detail_left_var,
             justify=tk.LEFT,
             anchor="nw",
+            style="DetailBody.TLabel",
         )
         self.detail_left_label.pack(fill=tk.X, expand=True)
 
@@ -453,37 +637,53 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             textvariable=self.detail_right_var,
             justify=tk.LEFT,
             anchor="nw",
+            style="DetailBody.TLabel",
         )
         self.detail_right_label.pack(fill=tk.X, expand=True)
 
         detail_body.bind("<Configure>", self._on_detail_body_resize)
 
         # 底部按钮和进度条
-        bot = ttk.Frame(self.root, padding=10)
-        bot.pack(fill=tk.X)
+        bot = ttk.Frame(self.root, padding=(10, 8), style="Toolbar.TFrame")
+        bot.pack(fill=tk.X, padx=12, pady=(0, 12))
 
         self.btn_pre = ttk.Button(
-            bot, text="1. 高速识别预览", command=self.start_preview
+            bot,
+            text="1. 高速识别预览",
+            style="primary.TButton",
+            command=self.start_preview,
         )
         self.btn_pre.pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
-            bot, text="2. 原地重命名", command=lambda: self.start_run_logic("rename")
+            bot,
+            text="2. 原地重命名",
+            style="secondary.TButton",
+            command=lambda: self.start_run_logic("rename"),
         ).pack(side=tk.LEFT, padx=5)
         ttk.Button(
-            bot, text="3. 归档移动", command=lambda: self.start_run_logic("archive")
+            bot,
+            text="3. 归档移动",
+            style="info.TButton",
+            command=lambda: self.start_run_logic("archive"),
         ).pack(side=tk.LEFT, padx=5)
         ttk.Button(
-            bot, text="4. 原地整理", command=lambda: self.start_run_logic("organize")
+            bot,
+            text="4. 原地整理",
+            style="success.TButton",
+            command=lambda: self.start_run_logic("organize"),
         ).pack(side=tk.LEFT, padx=5)
         ttk.Button(
-            bot, text="5. 刮削", command=self.start_scrape_logic
+            bot,
+            text="5. 刮削",
+            style="warning.TButton",
+            command=self.start_scrape_logic,
         ).pack(side=tk.LEFT, padx=5)
 
         self.pbar = ttk.Progressbar(bot, mode="determinate")
         self.pbar.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=15)
 
-        self.status = ttk.Label(bot, text="就绪")
+        self.status = ttk.Label(bot, text="就绪", style="Subtle.TLabel")
         self.status.pack(side=tk.RIGHT)
         self.refresh_tree_view(preserve_selection=False)
         self._set_details_content("当前没有选中任何分组或文件。", "")
@@ -744,6 +944,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 iid=group_iid,
                 text=group_path,
                 open=(group_iid in self.expanded_groups or group_iid in selected_sources),
+                tags=("source",),
                 values=("", "", "", ""),
             )
             if self._use_flat_source_layout(group_path):
@@ -753,6 +954,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                         tk.END,
                         iid=item.id,
                         text=item.old_name,
+                        tags=("file",),
                         values=self._item_values(item),
                     )
                 continue
@@ -767,6 +969,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                         season_iid in self.expanded_groups
                         or season_iid in selected_seasons
                     ),
+                    tags=("season",),
                     values=("", "", "", ""),
                 )
                 for item in items:
@@ -775,6 +978,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                         tk.END,
                         iid=item.id,
                         text=item.old_name,
+                        tags=("file",),
                         values=self._item_values(item),
                     )
 
@@ -1001,13 +1205,18 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         center_window(win, self.root, 860, 760)
         win.after_idle(lambda: center_window(win, self.root, 860, 760))
         win.minsize(760, 620)
+        win.configure(bg=self.colors["bg"])
         win.grab_set()
         win.focus_set()
 
-        content_wrap = ttk.Frame(win)
+        content_wrap = ttk.Frame(win, style="App.TFrame")
         content_wrap.pack(fill=tk.BOTH, expand=True)
 
-        canvas = tk.Canvas(content_wrap, highlightthickness=0)
+        canvas = tk.Canvas(
+            content_wrap,
+            highlightthickness=0,
+            background=self.colors["bg"],
+        )
         scrollbar = ttk.Scrollbar(
             content_wrap, orient=tk.VERTICAL, command=canvas.yview
         )
@@ -1016,7 +1225,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        f = ttk.Frame(canvas, padding=20)
+        f = ttk.Frame(canvas, padding=20, style="App.TFrame")
         canvas_window = canvas.create_window((0, 0), window=f, anchor="nw")
         f.columnconfigure(0, weight=0, minsize=210)
         f.columnconfigure(1, weight=1)
@@ -1058,7 +1267,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Label(f, text="TMDb API Key:").grid(row=row, column=0, sticky=tk.W, pady=5)
         tmdb_key_entry = ttk.Entry(f, textvariable=self.tmdb_api_key, show="*")
         tmdb_key_entry.grid(row=row, column=1, sticky="ew", pady=5, padx=10)
-        tmdb_key_btn = ttk.Button(f, text="显示", width=6)
+        tmdb_key_btn = ttk.Button(f, text="显示", width=6, style="secondary.TButton")
         tmdb_key_btn.config(
             command=lambda e=tmdb_key_entry, b=tmdb_key_btn: self._toggle_entry_visibility(e, b)
         )
@@ -1068,7 +1277,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Label(f, text="BGM API Key:").grid(row=row, column=0, sticky=tk.W, pady=5)
         bgm_key_entry = ttk.Entry(f, textvariable=self.bgm_api_key, show="*")
         bgm_key_entry.grid(row=row, column=1, sticky="ew", pady=5, padx=10)
-        bgm_key_btn = ttk.Button(f, text="显示", width=6)
+        bgm_key_btn = ttk.Button(f, text="显示", width=6, style="secondary.TButton")
         bgm_key_btn.config(
             command=lambda e=bgm_key_entry, b=bgm_key_btn: self._toggle_entry_visibility(e, b)
         )
@@ -1080,7 +1289,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
         sf_key_entry = ttk.Entry(f, textvariable=self.sf_api_key, show="*")
         sf_key_entry.grid(row=row, column=1, sticky="ew", pady=5, padx=10)
-        sf_key_btn = ttk.Button(f, text="显示", width=6)
+        sf_key_btn = ttk.Button(f, text="显示", width=6, style="secondary.TButton")
         sf_key_btn.config(
             command=lambda e=sf_key_entry, b=sf_key_btn: self._toggle_entry_visibility(e, b)
         )
@@ -1096,6 +1305,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Button(
             f,
             text="测试连接",
+            style="info.TButton",
             command=lambda: self._test_silicon_api(sf_test_status_var),
         ).grid(row=row, column=2, sticky="w", pady=5)
         row += 1
@@ -1172,6 +1382,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Button(
             f,
             text="刷新模型",
+            style="secondary.TButton",
             command=lambda: self._refresh_ollama_model_options(
                 ollama_model_combo, embedding_model_combo, ollama_status_var, True
             ),
@@ -1291,6 +1502,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Button(
             action_bar,
             text="保存并生效 (无需重启)",
+            style="success.TButton",
             command=lambda: [self.save_config(), win.destroy()],
         ).grid(row=0, column=1, sticky="e")
 
@@ -1820,4 +2032,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = MediaRenamerGUI(root)
     root.mainloop()
-

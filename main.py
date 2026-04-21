@@ -28,7 +28,12 @@ def main():
     _setup_logging()
     from core.app import MediaRenamerGUI
 
-    root = tk.Tk()
+    try:
+        import ttkbootstrap as tb
+
+        root = tb.Window(themename="cosmo")
+    except Exception:
+        root = tk.Tk()
     app = MediaRenamerGUI(root)
     root.mainloop()
 
