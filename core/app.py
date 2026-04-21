@@ -35,11 +35,16 @@ from core.services.matcher_service import (
     pick_candidate_with_ollama,
     rerank_candidates_with_embedding,
 )
+from core.services.template_service import (
+    build_filename_context,
+    render_filename_template,
+)
 from core.services.naming_service import (
     build_status_text,
     can_reuse_dir_ai,
     extract_explicit_season,
     extract_lang_and_ext,
+    extract_media_suffix,
     friendly_status_text,
     get_version_tag,
     pick_season,
@@ -154,6 +159,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
         self.movie_format = tk.StringVar(
             value=self.config.get("movie_format", DEFAULT_MOVIE_FORMAT)
+        )
+        self.preserve_media_suffix = tk.BooleanVar(
+            value=self.config.get("preserve_media_suffix", False)
         )
 
         # 动态读取扩展名和语言标签
@@ -716,6 +724,53 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             seen.add(key)
             items.append(text)
         return items
+
+    def _extract_media_suffix(self, filename, pure_name=None):
+        """Extract quality/source suffix from an original filename."""
+        return extract_media_suffix(filename, pure_name)
+
+    def _render_media_filename(
+        self,
+        template,
+        *,
+        title="",
+        year="",
+        season="",
+        episode="",
+        ep_name="",
+        ext="",
+        source_filename="",
+        pure_name="",
+        parse_source="",
+        source_provider="",
+        media_id="",
+        is_tv=True,
+    ):
+        """Render a filename and optionally preserve original media suffix."""
+        media_suffix = ""
+        if self.preserve_media_suffix.get():
+            media_suffix = safe_filename(
+                self._extract_media_suffix(source_filename, pure_name)
+            )
+        context = build_filename_context(
+            title=title,
+            year=year,
+            season=season,
+            episode=episode,
+            ep_name=ep_name,
+            ext=ext,
+            media_suffix=media_suffix,
+            parse_source=parse_source,
+            source_provider=source_provider,
+            media_id=media_id,
+            is_tv=is_tv,
+        )
+        new_name = render_filename_template(
+            template,
+            context,
+            preserve_media_suffix=self.preserve_media_suffix.get(),
+        )
+        return new_name, media_suffix
 
     def _has_ai_backend_configured(self):
         """Return whether at least one usable AI backend is configured."""
@@ -1374,6 +1429,13 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ).grid(row=row, column=2, sticky="w", pady=5)
         row += 1
 
+        ttk.Checkbutton(
+            f,
+            text="保留媒体信息后缀（如 2160p.TVING.WEB-DL.H.265.AAC-ColorTV）",
+            variable=self.preserve_media_suffix,
+        ).grid(row=row, column=0, columnspan=3, sticky=tk.W, pady=5)
+        row += 1
+
         # Ollama 配置
         ttk.Label(f, text="Ollama URL:").grid(row=row, column=0, sticky=tk.W, pady=5)
         ttk.Entry(f, textvariable=self.ollama_url).grid(
@@ -1468,6 +1530,16 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Entry(f, textvariable=self.movie_format).grid(
             row=row, column=1, sticky="ew", pady=5, padx=10
         )
+        row += 1
+
+        _wrap_label(
+            ttk.Label(
+                f,
+                text="支持两种写法：旧占位符写法如 {title} / {s:02d} / {ep_name}；高级写法支持 Jinja 语法，如 {{ title }}、{% if media_suffix %}...{% endif %}。另外可用变量新增 {media_suffix} / {{ media_suffix }}。",
+                justify=tk.LEFT,
+            ),
+            minimum=320,
+        ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=(0, 5), padx=10)
         row += 1
 
         # 扩展名配置

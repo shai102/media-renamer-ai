@@ -18,3 +18,4 @@ class MediaItem:
     display_target: str = ""
     status_text: str = "待命"
     parse_source: str = ""
+    media_suffix: str = ""

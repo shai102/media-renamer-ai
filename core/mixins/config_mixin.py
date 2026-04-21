@@ -67,6 +67,7 @@ class ConfigMixin:
             "tmdb_api_key": self.tmdb_api_key.get().strip(),
             "tv_format": self.tv_format.get(),
             "movie_format": self.movie_format.get(),
+            "preserve_media_suffix": self.preserve_media_suffix.get(),
             "video_exts": self.video_exts.get(),
             "sub_audio_exts": self.sub_audio_exts.get(),
             "lang_tags": self.lang_tags.get(),

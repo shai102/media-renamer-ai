@@ -19,6 +19,51 @@ from utils.helpers import (
     safe_str,
 )
 
+MEDIA_SUFFIX_START_RE = re.compile(
+    r"""(?ix)
+    (?:^|[.\s_\-\[\(])
+    (
+        \d{3,4}p
+        |web[.\s_-]?dl
+        |web[.\s_-]?rip
+        |blu[.\s_-]?ray
+        |bluray
+        |bdrip
+        |bdremux
+        |remux
+        |hdtv
+        |hdrip
+        |dvdrip
+        |uhd
+        |hevc
+        |x265
+        |x264
+        |h[.\s_-]?265
+        |h[.\s_-]?264
+        |av1
+        |hdr10\+?
+        |dolby[.\s_-]?vision
+        |dv
+        |aac(?:[.\-_]?\d\.\d)?
+        |ddp(?:[.\-_]?\d\.\d)?
+        |dd(?:[.\-_]?\d\.\d)?
+        |dts(?:[.\-_]?hd)?
+        |truehd
+        |atmos
+        |tving
+        |nf
+        |netflix
+        |amzn
+        |amazon
+        |dsnp
+        |disney
+        |hmax
+        |hulu
+        |colortv
+    )
+    """,
+)
+
 
 def extract_lang_and_ext(filename, lang_tags):
     """Extract language suffix and extension from a media name."""
@@ -41,6 +86,37 @@ def extract_lang_and_ext(filename, lang_tags):
     if match and match.group(1):
         return filename[: match.start()], match.group(1) + match.group(2)
     return os.path.splitext(filename)
+
+
+def extract_media_suffix(filename, pure_name=None):
+    """Extract a media-info suffix like 2160p.WEB-DL.H265.AAC-Group."""
+    text = str(
+        pure_name
+        if pure_name not in (None, "")
+        else os.path.splitext(str(filename or ""))[0]
+    ).strip()
+    if not text:
+        return ""
+
+    match = MEDIA_SUFFIX_START_RE.search(text)
+    if not match:
+        return ""
+
+    suffix = text[match.start(1):].strip(" ._-[]()")
+    if not suffix:
+        return ""
+    if normalize_compare_text(suffix) == normalize_compare_text(text):
+        return ""
+    return suffix
+
+
+def apply_media_suffix_template(template, media_suffix, preserve_media_suffix):
+    """Auto-append media suffix before extension when enabled and template omits it."""
+    working = str(template or "")
+    suffix = str(media_suffix or "").strip()
+    if preserve_media_suffix and suffix and "{media_suffix}" not in working:
+        working = working.replace("{ext}", " - {media_suffix}{ext}")
+    return working
 
 
 def extract_explicit_season(pure_name):

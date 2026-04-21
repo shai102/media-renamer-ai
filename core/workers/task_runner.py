@@ -150,28 +150,34 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
         safe_ep_name = safe_filename(ep_n_final)
 
         if is_tv:
-            new_fn = (
-                gui.tv_format.get()
-                .replace("{title}", safe_title)
-                .replace("{year}", safe_str(y))
-                .replace("{s:02d}", s_fmt)
-                .replace("{s}", s_fmt)
-                .replace("{e:02d}", e_fmt)
-                .replace("{e}", e_fmt)
-                .replace("{ep_name}", safe_ep_name)
-                .replace("{ext}", v_tag + ext)
+            new_fn, media_suffix = gui._render_media_filename(
+                gui.tv_format.get(),
+                title=safe_title,
+                year=y,
+                season=s_fmt,
+                episode=e_fmt,
+                ep_name=safe_ep_name,
+                ext=v_tag + ext,
+                source_filename=item.old_name,
+                pure_name=pure,
+                parse_source=item.parse_source or "",
+                source_provider="tmdb" if mode == "siliconflow_tmdb" else "bgm",
+                media_id=t_id,
+                is_tv=is_tv,
             )
         else:
-            new_fn = (
-                gui.movie_format.get()
-                .replace("{title}", safe_title)
-                .replace("{year}", safe_str(y))
-                .replace("{ext}", v_tag + ext)
+            new_fn, media_suffix = gui._render_media_filename(
+                gui.movie_format.get(),
+                title=safe_title,
+                year=y,
+                ext=v_tag + ext,
+                source_filename=item.old_name,
+                pure_name=pure,
+                parse_source=item.parse_source or "",
+                source_provider="tmdb" if mode == "siliconflow_tmdb" else "bgm",
+                media_id=t_id,
+                is_tv=is_tv,
             )
-
-        new_fn = re.sub(r"\s*\(\s*\)", "", new_fn)
-        new_fn = re.sub(r"\s*-\s*(?=\.)|\s*-\s*$", "", new_fn)
-        new_fn = re.sub(r"\s+(?=\.)", "", new_fn).strip()
 
         actors, directors = [], []
         if mode == "siliconflow_tmdb" and t_id and t_id != "None":
@@ -206,6 +212,7 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
             "original_title": meta.get("original_title", ""),
         }
         item.new_name_only = new_fn
+        item.media_suffix = media_suffix
 
         root_d = gui.target_root.get().strip()
         if root_d:
@@ -630,28 +637,34 @@ def process_task(gui, i):
         safe_ep_name = safe_filename(ep_n_final)
 
         if is_tv:
-            new_fn = (
-                gui.tv_format.get()
-                .replace("{title}", safe_std_t)
-                .replace("{year}", safe_str(y))
-                .replace("{s:02d}", s_fmt)
-                .replace("{s}", s_fmt)
-                .replace("{e:02d}", e_fmt)
-                .replace("{e}", e_fmt)
-                .replace("{ep_name}", safe_ep_name)
-                .replace("{ext}", v_tag + ext)
+            new_fn, media_suffix = gui._render_media_filename(
+                gui.tv_format.get(),
+                title=safe_std_t,
+                year=y,
+                season=s_fmt,
+                episode=e_fmt,
+                ep_name=safe_ep_name,
+                ext=v_tag + ext,
+                source_filename=item.old_name,
+                pure_name=pure,
+                parse_source=parse_source,
+                source_provider="tmdb" if effective_tmdb else "bgm",
+                media_id=tid,
+                is_tv=is_tv,
             )
         else:
-            new_fn = (
-                gui.movie_format.get()
-                .replace("{title}", safe_std_t)
-                .replace("{year}", safe_str(y))
-                .replace("{ext}", v_tag + ext)
+            new_fn, media_suffix = gui._render_media_filename(
+                gui.movie_format.get(),
+                title=safe_std_t,
+                year=y,
+                ext=v_tag + ext,
+                source_filename=item.old_name,
+                pure_name=pure,
+                parse_source=parse_source,
+                source_provider="tmdb" if effective_tmdb else "bgm",
+                media_id=tid,
+                is_tv=is_tv,
             )
-
-        new_fn = re.sub(r"\s*\(\s*\)", "", new_fn)
-        new_fn = re.sub(r"\s*-\s*(?=\.)|\s*-\s*$", "", new_fn)
-        new_fn = re.sub(r"\s+(?=\.)", "", new_fn).strip()
 
         actors, directors = [], []
         if effective_tmdb and tid and tid != "None":
@@ -689,6 +702,7 @@ def process_task(gui, i):
         item.parse_source = parse_source
 
         item.new_name_only = new_fn
+        item.media_suffix = media_suffix
 
         root_d = gui.target_root.get().strip()
         if root_d:

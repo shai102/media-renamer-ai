@@ -3,6 +3,10 @@ import unittest
 from ai.ollama_ai import _extract_siliconflow_content
 from core.services.matcher_service import extract_ollama_model_names
 from core.services.naming_service import extract_explicit_season, pick_season
+from core.services.template_service import (
+    build_filename_context,
+    render_filename_template,
+)
 from core.workers.task_runner import SPECIAL_TAG_RE
 from utils.helpers import (
     build_query_titles,
@@ -99,6 +103,52 @@ class SmokeTests(unittest.TestCase):
     def test_special_tag_regex_matches_real_special_marker(self):
         name = "Anime.Title.S01E01.[NC.Ver].1080p"
         self.assertIsNotNone(SPECIAL_TAG_RE.search(name))
+
+    def test_render_filename_template_legacy_still_works(self):
+        context = build_filename_context(
+            title="剑来",
+            season="01",
+            episode="02",
+            ep_name="天涯咫尺",
+            ext=".strm",
+            media_suffix="2160p.TVING.WEB-DL.H.265.AAC-ColorTV",
+            source_provider="tmdb",
+            media_id="259537",
+            is_tv=True,
+        )
+        rendered = render_filename_template(
+            "{title} - S{s:02d}E{e:02d} - {ep_name}{ext}",
+            context,
+            preserve_media_suffix=True,
+        )
+        self.assertEqual(
+            rendered,
+            "剑来 - S01E02 - 天涯咫尺 - 2160p.TVING.WEB-DL.H.265.AAC-ColorTV.strm",
+        )
+
+    def test_render_filename_template_advanced_jinja(self):
+        context = build_filename_context(
+            title="信号",
+            year="2016",
+            season="01",
+            episode="01",
+            ep_name="回响",
+            ext=".strm",
+            media_suffix="2160p.TVING.WEB-DL.H.265.AAC-ColorTV",
+            parse_source="guessit",
+            source_provider="tmdb",
+            media_id="62085",
+            is_tv=True,
+        )
+        rendered = render_filename_template(
+            "{{ title }} - S{{ season }}E{{ episode }}{% if ep_name %} - {{ ep_name }}{% endif %}{% if media_suffix %} - {{ media_suffix }}{% endif %}{{ ext }}",
+            context,
+            preserve_media_suffix=True,
+        )
+        self.assertEqual(
+            rendered,
+            "信号 - S01E01 - 回响 - 2160p.TVING.WEB-DL.H.265.AAC-ColorTV.strm",
+        )
 
 
 if __name__ == "__main__":

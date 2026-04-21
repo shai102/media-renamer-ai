@@ -24,6 +24,14 @@
   - `辅助识别`：先 `guessit`，搜不到再让 AI 重提标题后二次搜索
   - `强制使用`：只走 AI，失败直接待手动确认
 - 关键词过滤：支持在识别前剔除干扰关键词，提升番剧、压制组、片源标签混杂文件名的匹配成功率。
+- 文件名模板升级：
+  - 旧占位符模板继续兼容，例如 `{title} - S{s:02d}E{e:02d} - {ep_name}{ext}`
+  - 新增高级模板语法，支持类似 Jinja 的 `{{ title }}`、`{% if media_suffix %}...{% endif %}` 写法
+  - 文件夹结构保持当前默认规则，升级仅作用于“文件名模板”
+- 媒体信息后缀保留：
+  - 可从原文件名中提取如 `2160p.TVING.WEB-DL.H.265.AAC-ColorTV` 这类尾缀
+  - 支持通过 `{media_suffix}` 或 `{{ media_suffix }}` 写入命名模板
+  - 也可在设置中启用“保留媒体信息后缀”，在模板未显式写入时自动追加到扩展名前
 - 数据库匹配：支持 TMDb 与 Bangumi（BGM）。
   - 选 `AI + TMDb` 时，如果 TMDb 无结果，会自动回退到 BGM
   - 回退命中后会按实际命中来源继续走元数据与命名链，不会硬套错源
@@ -97,6 +105,10 @@
   - 主程序默认接入 `ttkbootstrap`
   - 主界面和设置页统一为 `Cosmo` 浅色桌面风格
   - 顶部工具带、主列表区、详情区、底部操作栏都做了卡片化和分色
+- 高级文件名模板：
+  - 新增 `core/services/template_service.py`
+  - 文件名模板同时支持旧占位符写法和 Jinja 风格高级写法
+  - 新增模板变量 `media_suffix`
 - 专属程序图标：
   - 新增 `assets/app_icon.ico`
   - 运行窗口和打包生成的 EXE 共用同一套图标资源
@@ -134,6 +146,7 @@ core/
   services/
     matcher_service.py          # Ollama 解析、embedding 重排、候选判定
     naming_service.py           # 季集提取、标题复用、状态文本与命名辅助
+    template_service.py         # 文件名模板渲染（旧占位符 / Jinja 双兼容）
   ui/
     dialogs.py                  # 季偏移等对话框
     manual_match.py             # 手动匹配流程、候选弹窗、右键菜单
@@ -199,8 +212,110 @@ run_tests.bat
 - 是否启用 Embedding 候选重排
 - 并发参数（预览、同步、执行）
 - 命名模板与扩展名规则
+- 是否保留媒体信息后缀（如 `2160p.TVING.WEB-DL.H.265.AAC-ColorTV`）
 
 配置保存在本地 `renamer_config.json`（已在 `.gitignore` 中排除）。
+
+## 文件名模板
+
+当前项目的“文件名模板”已经支持两种写法：
+
+### 1. 旧占位符写法
+
+示例：
+
+```text
+{title} - S{s:02d}E{e:02d} - {ep_name}{ext}
+```
+
+这个写法会继续兼容，你现有配置不用重写。
+
+### 2. 高级模板写法
+
+示例：
+
+```jinja2
+{{ title }} - S{{ season }}E{{ episode }}{% if ep_name %} - {{ ep_name }}{% endif %}{% if media_suffix %} - {{ media_suffix }}{% endif %}{{ ext }}
+```
+
+这个写法适合做更复杂的显示逻辑，例如：
+
+- 有集标题才显示 ` - {{ ep_name }}`
+- 有媒体后缀才显示 ` - {{ media_suffix }}`
+- 电影和剧集可以分别写成不同风格
+
+### 当前可用变量
+
+| 变量 | 说明 | 示例 |
+|---|---|---|
+| `title` | 识别后的标准标题 | 剑来 |
+| `year` | 年份 | 2024 |
+| `season` | 季号，两位数字字符串 | `01` |
+| `episode` | 集号，两位数字字符串 | `08` |
+| `s` | 兼容旧模板的季号变量 | `01` |
+| `e` | 兼容旧模板的集号变量 | `08` |
+| `ep_name` | 集标题 | 天涯咫尺 |
+| `ext` | 扩展名，包含点号 | `.strm` |
+| `media_suffix` | 原文件名中的媒体信息后缀 | `2160p.TVING.WEB-DL.H.265.AAC-ColorTV` |
+| `parse_source` | 标题解析来源 | `guessit` / `ai` |
+| `source_provider` / `provider` | 命中的数据源 | `tmdb` / `bgm` |
+| `media_id` | 当前命中的数据库 ID | `259537` |
+| `tmdbid` | 当来源为 TMDb 时可用 | `259537` |
+| `bgmid` | 当来源为 BGM 时可用 | `123456` |
+| `is_tv` | 是否为剧集 | `true / false` |
+
+### 媒体信息后缀示例
+
+原文件名：
+
+```text
+Signal.S01E01.2016.2160p.TVING.WEB-DL.H.265.AAC-ColorTV.strm
+```
+
+提取出的 `media_suffix`：
+
+```text
+2160p.TVING.WEB-DL.H.265.AAC-ColorTV
+```
+
+### 推荐模板示例
+
+剧集（简洁）：
+
+```text
+{title} - S{s:02d}E{e:02d}{ext}
+```
+
+剧集（带集标题）：
+
+```text
+{title} - S{s:02d}E{e:02d} - {ep_name}{ext}
+```
+
+剧集（带媒体后缀）：
+
+```jinja2
+{{ title }} - S{{ season }}E{{ episode }}{% if ep_name %} - {{ ep_name }}{% endif %}{% if media_suffix %} - {{ media_suffix }}{% endif %}{{ ext }}
+```
+
+电影（标准）：
+
+```text
+{title} ({year}){ext}
+```
+
+电影（带媒体后缀）：
+
+```jinja2
+{{ title }}{% if year %} ({{ year }}){% endif %}{% if media_suffix %} - {{ media_suffix }}{% endif %}{{ ext }}
+```
+
+说明：
+
+- 文件夹模板目前没有升级，仍然按程序默认的媒体库目录结构生成
+- 如果启用了“保留媒体信息后缀”，但模板里没写 `media_suffix`，程序会自动把它追加到扩展名前
+- 如果模板里已经显式写了 `media_suffix`，程序不会重复追加
+- 模板渲染后仍会自动清理空括号、多余连接符和非法路径字符
 
 ## 说明
 
