@@ -10,8 +10,8 @@ class SeasonOffsetDialog(tk.Toplevel):
     def __init__(self, parent, title_name):
         super().__init__(parent)
         self.title("高级季集映射")
-        center_window(self, parent, 450, 260)
-        self.after_idle(lambda: center_window(self, parent, 450, 260))
+        center_window(self, parent, 450, 320)
+        self.after_idle(lambda: center_window(self, parent, 450, 320))
         self.result = None
 
         ttk.Label(
