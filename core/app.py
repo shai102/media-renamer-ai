@@ -114,7 +114,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v2.3")
+        self.root.title("媒体归档刮削助手 v2.4")
         self.root.geometry("1300x900")
         self.bootstrap_style = getattr(self.root, "style", None)
 
@@ -1263,9 +1263,11 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         win.configure(bg=self.colors["bg"])
         win.grab_set()
         win.focus_set()
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(0, weight=1)
 
         content_wrap = ttk.Frame(win, style="App.TFrame")
-        content_wrap.pack(fill=tk.BOTH, expand=True)
+        content_wrap.grid(row=0, column=0, sticky="nsew")
 
         canvas = tk.Canvas(
             content_wrap,
@@ -1567,9 +1569,8 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
         row += 1
 
-        # 保存按钮
-        action_bar = ttk.Frame(f)
-        action_bar.grid(row=row, column=0, columnspan=3, sticky="ew", pady=15)
+        action_bar = ttk.Frame(win, style="Toolbar.TFrame", padding=(16, 10))
+        action_bar.grid(row=1, column=0, sticky="ew")
         action_bar.columnconfigure(0, weight=1)
         ttk.Button(
             action_bar,

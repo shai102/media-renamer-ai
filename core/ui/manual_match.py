@@ -455,6 +455,9 @@ def show_candidate_picker_dialog(
     center_window(select_win, gui.root, 760, 520)
     select_win.after_idle(lambda: center_window(select_win, gui.root, 760, 520))
     select_win.attributes("-topmost", True)
+    select_win.minsize(720, 440)
+    select_win.columnconfigure(0, weight=1)
+    select_win.rowconfigure(1, weight=1)
 
     recognized_text = str(recognized_title or query_title or "").strip()
     searched_text = str(query_title or "").strip()
@@ -469,12 +472,12 @@ def show_candidate_picker_dialog(
         f"{title_block}\n"
         "请在下方候选中选择正确条目："
     )
-    ttk.Label(select_win, text=label_text, justify=tk.LEFT).pack(
-        anchor="w", padx=10, pady=(10, 4)
+    ttk.Label(select_win, text=label_text, justify=tk.LEFT).grid(
+        row=0, column=0, sticky="ew", padx=10, pady=(10, 4)
     )
 
     card_area = ttk.Frame(select_win)
-    card_area.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+    card_area.grid(row=1, column=0, sticky="nsew", padx=8, pady=4)
 
     selected_holder = {"idx": -1}
     dialog_closed = {"done": False}
@@ -532,7 +535,7 @@ def show_candidate_picker_dialog(
             _finalize(result_holder.get("selected"))
 
     btn_frame = ttk.Frame(select_win)
-    btn_frame.pack(fill=tk.X, padx=10, pady=8)
+    btn_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=8)
     ttk.Button(btn_frame, text="确认选择", command=on_confirm).pack(side=tk.LEFT)
     ttk.Button(btn_frame, text="跳过此文件夹", command=on_skip).pack(
         side=tk.LEFT, padx=8
@@ -846,6 +849,9 @@ def show_manual_match_results(gui, selected_ids, results, error_msg=""):
     select_win.transient(gui.root)
     center_window(select_win, gui.root, 720, 480)
     select_win.after_idle(lambda: center_window(select_win, gui.root, 720, 480))
+    select_win.minsize(680, 420)
+    select_win.columnconfigure(0, weight=1)
+    select_win.rowconfigure(0, weight=1)
 
     selected_holder = {"idx": -1}
 
@@ -853,7 +859,7 @@ def show_manual_match_results(gui, selected_ids, results, error_msg=""):
         selected_holder["idx"] = idx
 
     card_area = ttk.Frame(select_win)
-    card_area.pack(fill=tk.BOTH, expand=True, padx=8, pady=(8, 4))
+    card_area.grid(row=0, column=0, sticky="nsew", padx=8, pady=(8, 4))
     _build_scrollable_cards(card_area, items, on_card_select)
 
     def on_confirm():
@@ -871,7 +877,7 @@ def show_manual_match_results(gui, selected_ids, results, error_msg=""):
         select_win.destroy()
 
     btn_frame = ttk.Frame(select_win)
-    btn_frame.pack(fill=tk.X, padx=10, pady=8)
+    btn_frame.grid(row=1, column=0, sticky="ew", padx=10, pady=8)
     ttk.Button(btn_frame, text="确认选择", command=on_confirm).pack(side=tk.LEFT)
     ttk.Button(btn_frame, text="取消", command=select_win.destroy).pack(
         side=tk.LEFT, padx=8
