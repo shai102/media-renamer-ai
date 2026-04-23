@@ -176,9 +176,13 @@ def can_reuse_dir_ai(cached_ai, pure_name, guess_data=None):
     if not isinstance(cached_ai, dict):
         return False
 
-    cached_title = clean_search_title(cached_ai.get("title") or "")
-    cached_key = normalize_compare_text(cached_title)
-    if not cached_key:
+    cached_titles = [clean_search_title(cached_ai.get("title") or "")]
+    for alias in cached_ai.get("title_aliases") or []:
+        cached_titles.append(clean_search_title(alias or ""))
+
+    cached_keys = [normalize_compare_text(title) for title in cached_titles]
+    cached_keys = [key for key in cached_keys if key]
+    if not cached_keys:
         return False
 
     cached_year = safe_str(cached_ai.get("year"))
@@ -195,17 +199,22 @@ def can_reuse_dir_ai(cached_ai, pure_name, guess_data=None):
         cand_key = normalize_compare_text(candidate)
         if not cand_key:
             continue
-        if cand_key == cached_key:
-            return True
-        if len(cand_key) >= 4 and len(cached_key) >= 4:
-            ratio = difflib.SequenceMatcher(None, cand_key, cached_key).ratio()
-            if ratio >= 0.85:
+        for cached_key in cached_keys:
+            if cand_key == cached_key:
                 return True
-            # 处理 guessit 剥离 OVA/SP 等标签后标题变短的情况：
-            # 若其中一方是另一方的前缀，也视为同一作品（如"骑士团"与"骑士团 OVA"）
-            shorter, longer = (cand_key, cached_key) if len(cand_key) <= len(cached_key) else (cached_key, cand_key)
-            if longer.startswith(shorter) and len(shorter) >= 4:
-                return True
+            if len(cand_key) >= 4 and len(cached_key) >= 4:
+                ratio = difflib.SequenceMatcher(None, cand_key, cached_key).ratio()
+                if ratio >= 0.85:
+                    return True
+                # 处理 guessit 剥离 OVA/SP 等标签后标题变短的情况：
+                # 若其中一方是另一方的前缀，也视为同一作品（如"骑士团"与"骑士团 OVA"）
+                shorter, longer = (
+                    (cand_key, cached_key)
+                    if len(cand_key) <= len(cached_key)
+                    else (cached_key, cand_key)
+                )
+                if longer.startswith(shorter) and len(shorter) >= 4:
+                    return True
 
     return False
 

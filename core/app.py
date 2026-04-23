@@ -1414,7 +1414,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         _wrap_label(
             ttk.Label(
                 f,
-                text="禁用：只用文件名猜测；辅助识别：先 guessit，搜不到再让 AI 重提标题；强制使用：只走 AI。",
+                text="禁用：只用文件名猜测；辅助识别：标准命名优先用 guessit，番组/弱标题/季集不清晰时自动拉起 AI 参与修正；强制使用：只走 AI。",
                 justify=tk.LEFT,
             ),
             minimum=320,
