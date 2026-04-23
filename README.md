@@ -3,12 +3,25 @@
 一个面向动漫、剧集、电影、STRM 场景的桌面端媒体整理工具。  
 支持批量识别、手动锁定、原地重命名、归档移动、原地整理、NFO/图片刮削，以及本地 Ollama / OpenAI 兼容接口混合识别。
 
-`安装依赖` | `运行程序` | `界面预览` | `功能概览` | `配置说明` | `文件名模板` | `项目结构`
+## 快速跳转
+
+- [项目亮点](#highlights)
+- [适用场景](#scenarios)
+- [界面预览](#preview)
+- [功能概览](#features)
+- [推荐工作流](#workflow)
+- [最近维护更新](#changelog)
+- [环境要求](#install)
+- [运行](#run)
+- [测试](#test)
+- [配置说明](#config)
+- [文件名模板](#templates)
+- [项目结构](#structure)
 
 命名模板可用变量说明：  
 - [GitHub Wiki - 命名模板可用变量](https://github.com/shai102/media-renamer-ai/wiki/Naming-Template-Variables)
 
-## 项目亮点
+## <a id="highlights"></a>项目亮点
 
 | 模块 | 说明 |
 | --- | --- |
@@ -21,7 +34,7 @@
 | 桌面交互 | 基于 `Tkinter + ttkbootstrap (Cosmo)`，支持海报卡片候选选择 |
 | 固定底栏弹窗 | 候选较多时列表区滚动，底部确认/跳过/取消按钮始终可见 |
 
-## 适用场景
+## <a id="scenarios"></a>适用场景
 
 - 动漫 / 剧集 / 电影 / STRM 文件批量识别
 - 番组压制组、片源标签、年份、季集信息混杂的文件名清洗
@@ -35,7 +48,7 @@
 
 ![主界面预览](1.png)
 
-## 界面预览
+## <a id="preview"></a>界面预览
 
 ### 主界面
 
@@ -45,7 +58,7 @@
 
 ![设置与模板预览](2.png)
 
-## 功能概览
+## <a id="features"></a>功能概览
 
 - 分组树视图：GUI 固定为 `添加路径 -> Season/子目录 -> 文件` 的树形结构；如果导入目录本身就是平铺文件，则直接显示为 `添加路径 -> 文件`。
 - 作用域批处理：底部按钮会按当前焦点所在分组工作。
@@ -87,7 +100,7 @@
 - Cosmo 主题美化：主窗口、设置页、按钮、Treeview、详情区已统一到 `ttkbootstrap` 的 `Cosmo` 浅色主题风格。
 - EXE 程序图标：运行窗口和打包后的 EXE 都已使用项目专属图标。
 
-## 推荐工作流
+## <a id="workflow"></a>推荐工作流
 
 推荐使用顺序：
 
@@ -105,7 +118,7 @@
 - “原地整理”适合把零散 STRM / 视频目录直接整理成 Jellyfin / Emby / Kodi 可识别的媒体库结构。
 - “归档移动”适合把源目录内容整理到另一个媒体库根目录。
 
-## 最近维护更新（当前 GUI 版本：v2.4）
+## <a id="changelog"></a>最近维护更新（当前 GUI 版本：v2.4）
 
 ### 新增功能
 
@@ -169,7 +182,7 @@
 - 手动搜索结果弹窗同步改为固定底部操作栏，避免“确认选择 / 取消”被候选列表挤出可视区
 - 设置窗口保存区固定到底部，长内容场景下不需要滚到最底部才能点击保存
 
-## 环境要求
+## <a id="install"></a>环境要求
 
 - Python 3.10+
 - 依赖见 `requirements.txt`
@@ -180,13 +193,13 @@
 pip install -r requirements.txt
 ```
 
-## 运行
+## <a id="run"></a>运行
 
 ```bash
 python main.py
 ```
 
-## 测试
+## <a id="test"></a>测试
 
 统一测试命令：
 
@@ -200,7 +213,7 @@ Windows 可直接运行：
 run_tests.bat
 ```
 
-## 配置说明
+## <a id="config"></a>配置说明
 
 在 GUI 的“设置 / API”页面可配置：
 
@@ -220,7 +233,7 @@ run_tests.bat
 
 配置保存在本地 `renamer_config.json`（已在 `.gitignore` 中排除）。
 
-## 文件名模板
+## <a id="templates"></a>文件名模板
 
 当前项目的“文件名模板”已经支持两种写法：
 
@@ -321,7 +334,7 @@ Signal.S01E01.2016.2160p.TVING.WEB-DL.H.265.AAC-ColorTV.strm
 - 如果模板里已经显式写了 `media_suffix`，程序不会重复追加
 - 模板渲染后仍会自动清理空括号、多余连接符和非法路径字符
 
-## 项目结构
+## <a id="structure"></a>项目结构
 
 ```text
 main.py
