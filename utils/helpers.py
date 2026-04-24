@@ -505,6 +505,25 @@ def get_cache_key(api_name, query):
     return f"{api_name}:{str(query)}"
 
 
+def _is_cache_result_valid(cache_key, result):
+    if result is None:
+        return False
+    if isinstance(result, (list, dict, set)) and len(result) == 0:
+        return False
+    if isinstance(result, str) and not result.strip():
+        return False
+    if isinstance(result, tuple):
+        if cache_key.startswith(("tmdb_ep_v3:", "hybrid_ep_v1:", "bgm_ep:")) and (
+            not str(result[0] if result else "").strip()
+        ):
+            return False
+        if len(result) >= 2 and result[1] == "None":
+            return False
+        if len(result) >= 3 and not result[0] and not result[1]:
+            return False
+    return True
+
+
 def cached_request(api_func, cache_key, *args, **kwargs):
     global _cache_dirty, _cache_write_count
     now_ts = datetime.now().timestamp()
@@ -518,24 +537,16 @@ def cached_request(api_func, cache_key, *args, **kwargs):
 
         cached_entry = (_cache_data or {}).get(cache_key)
         if isinstance(cached_entry, dict) and cached_entry.get("expiry", 0) >= now_ts:
-            return cached_entry.get("data")
+            cached_data = cached_entry.get("data")
+            if _is_cache_result_valid(cache_key, cached_data):
+                return cached_data
+            _cache_data.pop(cache_key, None)
+            _cache_dirty = True
+            _flush_cache_to_disk_unlocked(force=False)
 
     result = api_func(*args, **kwargs)
 
-    is_valid = True
-    if result is None:
-        is_valid = False
-    elif isinstance(result, (list, dict, set)) and len(result) == 0:
-        is_valid = False
-    elif isinstance(result, str) and not result.strip():
-        is_valid = False
-    elif isinstance(result, tuple):
-        if len(result) >= 2 and result[1] == "None":
-            is_valid = False
-        elif len(result) >= 3 and not result[0] and not result[1]:
-            is_valid = False
-
-    if is_valid:
+    if _is_cache_result_valid(cache_key, result):
         with _cache_file_lock:
             _ensure_cache_loaded_unlocked()
             _cache_data[cache_key] = {

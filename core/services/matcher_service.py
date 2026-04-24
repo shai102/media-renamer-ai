@@ -93,6 +93,35 @@ def _normalize_temperature(value, default=0.2):
     return max(0.0, min(2.0, number))
 
 
+def _normalize_ollama_parse_result(data):
+    title = str(data.get("title") or "").strip()
+
+    year = data.get("year")
+    try:
+        year = int(year) if year not in (None, "") else None
+    except (TypeError, ValueError):
+        year = None
+
+    try:
+        season = int(data.get("season") or 1)
+    except (TypeError, ValueError):
+        season = 1
+    season = max(1, season)
+
+    try:
+        episode = int(data.get("episode") or 1)
+    except (TypeError, ValueError):
+        episode = 1
+    episode = max(1, episode)
+
+    return {
+        "title": title,
+        "year": year,
+        "season": season,
+        "episode": episode,
+    }
+
+
 def parse_with_ollama(base_url, model, filename, temperature=0.2, top_p=0.9):
     """Parse media filename using local Ollama model."""
     model = str(model or "").strip()
@@ -144,10 +173,11 @@ def parse_with_ollama(base_url, model, filename, temperature=0.2, top_p=0.9):
             {"role": "user", "content": filename},
         ],
         "stream": False,
+        "think": False,
         "options": {
             "temperature": _normalize_temperature(temperature),
             "top_p": _normalize_top_p(top_p),
-            "num_predict": 200,
+            "num_predict": 512,
         },
         "timeout": TIMEOUT_OLLAMA_CHAT[1],
     }
@@ -169,12 +199,12 @@ def parse_with_ollama(base_url, model, filename, temperature=0.2, top_p=0.9):
             data = json.loads(content)
             if not isinstance(data, dict):
                 return None, format_error_message(ERROR_CODE_PARSE, "返回内容不是 JSON 对象")
-            return data, "Ollama解析成功"
+            return _normalize_ollama_parse_result(data), "Ollama解析成功"
         except json.JSONDecodeError:
             json_match = re.search(r"\{.*\}", content, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
-                return data, "Ollama解析成功"
+                return _normalize_ollama_parse_result(data), "Ollama解析成功"
             return None, format_error_message(ERROR_CODE_PARSE, "无法解析返回的JSON")
 
     except requests.exceptions.Timeout:
@@ -333,6 +363,7 @@ JSON 格式: {{"pick": 0或候选序号, "reason": "简短原因"}}
             {"role": "user", "content": prompt},
         ],
         "stream": False,
+        "think": False,
         "options": {"temperature": _normalize_temperature(temperature)},
         "timeout": TIMEOUT_OLLAMA_CHAT[1],
     }

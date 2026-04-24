@@ -1,6 +1,11 @@
 import unittest
+from unittest.mock import Mock, patch
 
-from ai.ollama_ai import _extract_siliconflow_content, is_ai_rate_limited_error
+from ai.ollama_ai import (
+    _extract_siliconflow_content,
+    _should_retry_without_disabled_reasoning,
+    is_ai_rate_limited_error,
+)
 from core.services.matcher_service import extract_ollama_model_names
 from core.services.naming_service import (
     can_reuse_dir_ai,
@@ -16,6 +21,7 @@ from core.workers.task_runner import (
     _guessit_needs_assist,
     _is_meaningful_title,
 )
+from db.tmdb_api import fetch_tmdb_episode_meta_raw
 from utils.helpers import (
     build_db_query_plan,
     build_query_titles,
@@ -118,6 +124,38 @@ class SmokeTests(unittest.TestCase):
             is_ai_rate_limited_error("provider is temporarily rate-limited upstream")
         )
         self.assertFalse(is_ai_rate_limited_error("HTTP:AI请求失败: 500"))
+
+    def test_retry_without_disabled_reasoning_for_mandatory_reasoning(self):
+        class Response:
+            status_code = 400
+            text = '{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled."}}'
+
+        self.assertTrue(_should_retry_without_disabled_reasoning(Response()))
+
+    def test_tmdb_episode_fallback_passes_bgm_key_as_keyword(self):
+        def fake_tmdb_get(*_args, **_kwargs):
+            response = Mock()
+            response.raise_for_status.return_value = None
+            response.json.return_value = {
+                "name": "",
+                "overview": "plot",
+                "still_path": "",
+            }
+            return response
+
+        with patch("db.tmdb_api._tmdb_get", side_effect=fake_tmdb_get), patch(
+            "db.tmdb_api.fetch_bgm_candidates",
+            return_value=[{"id": "123"}],
+        ) as bgm_candidates, patch(
+            "db.tmdb_api.fetch_bgm_episode", return_value=("BGM Ep 1", "desc")
+        ):
+            name, plot, _still = fetch_tmdb_episode_meta_raw(
+                "207784", 1, 1, "tmdb-key", "Dungeon Meshi", "bgm-key"
+            )
+
+        self.assertEqual(name, "BGM Ep 1")
+        self.assertEqual(plot, "plot")
+        bgm_candidates.assert_called_with("Dungeon Meshi", api_key="bgm-key")
 
     def test_build_query_titles_filters_generic_season_title(self):
         item = {

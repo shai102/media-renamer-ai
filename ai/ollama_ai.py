@@ -22,6 +22,13 @@ from utils.helpers import (
 
 AI_RATE_LIMIT_MAX_REQUESTS = 20
 AI_RATE_LIMIT_WINDOW_SECONDS = 60.0
+DISABLE_REASONING_PARAMS = {
+    "enable_thinking": False,
+    "thinking": False,
+    "think": False,
+    "reasoning_effort": "none",
+    "reasoning": {"exclude": True},
+}
 _ai_request_lock = threading.Lock()
 _ai_request_times = deque()
 
@@ -60,6 +67,55 @@ def _throttle_ai_request():
 def is_ai_rate_limited_error(message):
     text = str(message or "").lower()
     return "429" in text or "rate limit" in text or "rate-limit" in text
+
+
+def _with_disabled_reasoning(payload):
+    data = dict(payload or {})
+    data.update(DISABLE_REASONING_PARAMS)
+    return data
+
+
+def _without_disabled_reasoning(payload):
+    data = dict(payload or {})
+    for key in DISABLE_REASONING_PARAMS:
+        data.pop(key, None)
+    return data
+
+
+def _should_retry_without_disabled_reasoning(response):
+    status = getattr(response, "status_code", None)
+    if status != 400:
+        return False
+
+    text = _response_body_snippet(response, 1000).lower()
+    if "reasoning" not in text and "thinking" not in text and "think" not in text:
+        return False
+
+    markers = (
+        "mandatory",
+        "cannot be disabled",
+        "can't be disabled",
+        "unsupported",
+        "unknown parameter",
+        "unrecognized",
+        "invalid parameter",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _post_openai_compatible(url, payload, headers, timeout):
+    _throttle_ai_request()
+    response = session.post(url, json=payload, headers=headers, timeout=timeout)
+    if _should_retry_without_disabled_reasoning(response):
+        logging.info("AI provider requires reasoning; retrying without disable flags")
+        _throttle_ai_request()
+        response = session.post(
+            url,
+            json=_without_disabled_reasoning(payload),
+            headers=headers,
+            timeout=timeout,
+        )
+    return response
 
 
 def _extract_text_from_content(value):
@@ -236,7 +292,7 @@ def fetch_siliconflow_info(
         "Content-Type": "application/json",
     }
 
-    payload = {
+    payload = _with_disabled_reasoning({
         "model": model,
         "messages": [
             {"role": "system", "content": prompt},
@@ -245,13 +301,11 @@ def fetch_siliconflow_info(
         "temperature": _normalize_temperature(temperature),
         "top_p": _normalize_top_p(top_p),
         "max_tokens": 500,
-        "enable_thinking": False,
-    }
+    })
 
     try:
-        _throttle_ai_request()
-        response = session.post(
-            url, json=payload, headers=headers, timeout=TIMEOUT_AI_CHAT
+        response = _post_openai_compatible(
+            url, payload, headers=headers, timeout=TIMEOUT_AI_CHAT
         )
         response.raise_for_status()
 
@@ -358,7 +412,7 @@ def test_silicon_api(api_url, api_key, model_name):
         "Content-Type": "application/json",
     }
 
-    payload = {
+    payload = _with_disabled_reasoning({
         "model": model,
         "messages": [
             {
@@ -370,13 +424,11 @@ def test_silicon_api(api_url, api_key, model_name):
         "temperature": 0,
         "top_p": 1,
         "max_tokens": 10,
-        "enable_thinking": False,
-    }
+    })
 
     try:
-        _throttle_ai_request()
-        response = session.post(
-            url, json=payload, headers=headers, timeout=TIMEOUT_AI_TEST
+        response = _post_openai_compatible(
+            url, payload, headers=headers, timeout=TIMEOUT_AI_TEST
         )
         response.raise_for_status()
 

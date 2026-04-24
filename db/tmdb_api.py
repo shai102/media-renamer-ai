@@ -637,7 +637,9 @@ def fetch_tmdb_episode_meta_raw(
             not plot or not str(plot).strip() or not name or is_placeholder_name
         ) and series_title:
             try:
-                bgm_candidates = fetch_bgm_candidates(series_title, api_key_bgm)
+                bgm_candidates = fetch_bgm_candidates(
+                    series_title, api_key=api_key_bgm
+                )
                 if bgm_candidates:
                     bgm_subject_id = str(bgm_candidates[0].get("id", ""))
                     if bgm_subject_id:

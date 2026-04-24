@@ -2,6 +2,7 @@
 import os
 import re
 import tkinter as tk
+import time
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tkinter import messagebox
@@ -51,6 +52,7 @@ GENERIC_SEASON_DIR_RE = re.compile(
     r"(?i)^(?:season\s*\d{1,2}|s\s*\d{1,2}|第\s*\d{1,2}\s*季)$"
 )
 STANDARD_EPISODE_RE = re.compile(r"(?i)\bS\d{1,2}E\d{1,3}\b")
+AI_RATE_LIMIT_COOLDOWN_SECONDS = 60.0
 
 
 def extract_season_from_dir(dir_path):
@@ -82,32 +84,26 @@ def _is_meaningful_title(title):
 
 def _fetch_ai_parse(gui, pure_for_parse):
     """Fetch parse result from the configured AI backend."""
-    if gui.prefer_ollama.get():
-        if gui.ollama_url.get().strip() and gui.ollama_model.get().strip():
-            ai_data, ai_msg = gui._parse_with_ollama(pure_for_parse)
-            if ai_data is None and gui.sf_api_key.get().strip():
-                ai_data, ai_msg = fetch_siliconflow_info(
-                    pure_for_parse,
-                    gui.sf_api_key.get(),
-                    gui.sf_api_url.get(),
-                    gui.sf_model.get(),
-                    gui._get_ai_temperature(),
-                    gui._get_ai_top_p(),
-                )
-            return ai_data, ai_msg
-        if gui.sf_api_key.get().strip():
-            return fetch_siliconflow_info(
-                pure_for_parse,
-                gui.sf_api_key.get(),
-                gui.sf_api_url.get(),
-                gui.sf_model.get(),
-                gui._get_ai_temperature(),
-                gui._get_ai_top_p(),
-            )
-        return None, ""
+    def _remaining_remote_ai_cooldown():
+        until = float(getattr(gui, "remote_ai_cooldown_until", 0.0) or 0.0)
+        return max(0.0, until - time.monotonic())
 
-    if gui.sf_api_key.get().strip():
-        return fetch_siliconflow_info(
+    def _wait_remote_ai_cooldown():
+        while True:
+            remaining = _remaining_remote_ai_cooldown()
+            if remaining <= 0:
+                return
+            time.sleep(min(remaining, 1.0))
+
+    def _set_remote_ai_cooldown():
+        until = time.monotonic() + AI_RATE_LIMIT_COOLDOWN_SECONDS
+        with gui.cache_lock:
+            current = float(getattr(gui, "remote_ai_cooldown_until", 0.0) or 0.0)
+            gui.remote_ai_cooldown_until = max(current, until)
+
+    def _fetch_remote():
+        _wait_remote_ai_cooldown()
+        result = fetch_siliconflow_info(
             pure_for_parse,
             gui.sf_api_key.get(),
             gui.sf_api_url.get(),
@@ -115,6 +111,22 @@ def _fetch_ai_parse(gui, pure_for_parse):
             gui._get_ai_temperature(),
             gui._get_ai_top_p(),
         )
+        if not result[0] and is_ai_rate_limited_error(result[1]):
+            _set_remote_ai_cooldown()
+        return result
+
+    if gui.prefer_ollama.get():
+        if gui.ollama_url.get().strip() and gui.ollama_model.get().strip():
+            ai_data, ai_msg = gui._parse_with_ollama(pure_for_parse)
+            if ai_data is None and gui.sf_api_key.get().strip():
+                ai_data, ai_msg = _fetch_remote()
+            return ai_data, ai_msg
+        if gui.sf_api_key.get().strip():
+            return _fetch_remote()
+        return None, ""
+
+    if gui.sf_api_key.get().strip():
+        return _fetch_remote()
     return None, ""
 
 
@@ -138,6 +150,15 @@ def _mark_ai_rate_limited(gui, item):
 def _is_ai_rate_limited_item(item):
     status_text = str(getattr(item, "status_text", "") or "")
     return "AI限流" in status_text and str((getattr(item, "metadata", {}) or {}).get("id") or "None") == "None"
+
+
+def _cache_reuse_status(parse_source):
+    source = str(parse_source or "guessit").strip().lower()
+    if source == "ai":
+        return "AI复用"
+    if source == "hybrid":
+        return "AI辅助复用"
+    return "guessit复用"
 
 
 def _retry_rate_limited_siblings(gui, current_index, dir_p):
@@ -621,9 +642,9 @@ def process_task(gui, i, advance_progress=True):
             y = cached_ai.get("year")
             s = gui._pick_season(pure, g, cached_ai.get("season") or 1)
             e = extracted_ep or cached_ai.get("episode") or 1
-            ai_msg = "复用"
             ai_data = cached_ai
             parse_source = cached_ai.get("parse_source", "guessit")
+            ai_msg = _cache_reuse_status(parse_source)
         else:
             ai_data = None
             t = guess_title
