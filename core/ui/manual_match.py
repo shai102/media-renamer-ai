@@ -1,5 +1,6 @@
 ﻿import io
 import logging
+import re
 import threading
 import tkinter as tk
 from collections import OrderedDict
@@ -393,6 +394,11 @@ def request_manual_candidate_choice(
     if gui.preview_skip_all_event.is_set():
         return None
 
+    # Check if this file's directory is in skip list
+    item_dir = item.dir if hasattr(item, 'dir') else (item.get('dir') if isinstance(item, dict) else None)
+    if item_dir and item_dir in gui.preview_skip_dirs:
+        return None
+
     result_holder = {"selected": None}
     done_event = threading.Event()
 
@@ -423,6 +429,9 @@ def request_manual_candidate_choice(
     )
     with gui.popup_lock:
         if gui.preview_skip_all_event.is_set():
+            return None
+        # Check again in case directory was skipped while waiting
+        if item_dir and item_dir in gui.preview_skip_dirs:
             return None
         gui.root.after(0, _schedule_dialog)
         if not done_event.wait(timeout=120):
@@ -733,13 +742,25 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                     logging.error(f"BGM手动搜索请求失败: {err}")
                     append_error("BGM", format_error_message(ERROR_CODE_UNKNOWN, "请求异常"))
             else:
+                # Detect if query is primarily Latin/English or Chinese
+                has_chinese = bool(re.search(r'[一-鿿]', user_input))
+                has_latin = bool(re.search(r'[a-zA-Z]', user_input))
+
+                # Choose language based on query content
+                if has_latin and not has_chinese:
+                    # English query: use en-US
+                    language = "en-US"
+                else:
+                    # Chinese or mixed query: use zh-CN
+                    language = "zh-CN"
+
                 try:
                     res_tv = session.get(
                         "https://api.themoviedb.org/3/search/tv",
                         params={
                             "api_key": gui.tmdb_api_key.get().strip(),
                             "query": user_input,
-                            "language": "zh-CN",
+                            "language": language,
                         },
                         timeout=TIMEOUT_DB_SEARCH,
                     )
@@ -761,7 +782,7 @@ def async_manual_match_search(gui, selected_ids, user_input, mode):
                         params={
                             "api_key": gui.tmdb_api_key.get().strip(),
                             "query": user_input,
-                            "language": "zh-CN",
+                            "language": language,
                         },
                         timeout=TIMEOUT_DB_SEARCH,
                     )

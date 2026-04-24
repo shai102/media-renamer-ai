@@ -23,11 +23,7 @@ from utils.helpers import (
 AI_RATE_LIMIT_MAX_REQUESTS = 20
 AI_RATE_LIMIT_WINDOW_SECONDS = 60.0
 DISABLE_REASONING_PARAMS = {
-    "enable_thinking": False,
-    "thinking": False,
-    "think": False,
-    "reasoning_effort": "none",
-    "reasoning": {"exclude": True},
+    "thinking": {"type": "disabled"},
 }
 _ai_request_lock = threading.Lock()
 _ai_request_times = deque()
@@ -225,6 +221,9 @@ def fetch_siliconflow_info(
 1. title
    - 必须来自文件名中真实存在的作品名。
    - 不允许联想、补全、翻译、猜测、改写成其他作品名。
+   - 当文件名同时包含中文和英文标题时（如"迷宫饭.Dungeon.Meshi"），只保留其中一个：
+     - 优先保留英文标题（如 "Dungeon Meshi"）
+     - 如果英文部分不是完整标题，则保留中文标题
    - 可以做最小清洗：
      - 将下划线、点号替换为空格
      - 去掉首尾空格
@@ -276,6 +275,9 @@ def fetch_siliconflow_info(
 
 输入: 蜡笔小新.2024.S01E05.1080p.mkv
 输出: {"title":"蜡笔小新","year":2024,"season":1,"episode":5}
+
+输入: 迷宫饭.Dungeon.Meshi.2024.第01话.简繁内封.1080p.mkv
+输出: {"title":"Dungeon Meshi","year":2024,"season":1,"episode":1}
 
 输入: The.Mandalorian.S03E04.2023.WEB-DL.mkv
 输出: {"title":"The Mandalorian","year":2023,"season":3,"episode":4}
@@ -440,7 +442,17 @@ def test_silicon_api(api_url, api_key, model_name):
 
         try:
             _extract_siliconflow_content(result)
-            return True, f"连接成功! 模型: {model}"
+
+            # Check if thinking/reasoning mode is disabled
+            has_thinking = False
+            choices = result.get("choices", [])
+            if choices:
+                message = choices[0].get("message", {})
+                if "reasoning_content" in message or "thinking" in message:
+                    has_thinking = True
+
+            thinking_status = "已关闭" if not has_thinking else "未关闭"
+            return True, f"连接成功! 模型: {model} | 深思模式: {thinking_status}"
         except ValueError as err:
             return False, f"响应结构异常: {err}"
 

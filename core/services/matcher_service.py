@@ -137,12 +137,15 @@ def parse_with_ollama(base_url, model, filename, temperature=0.2, top_p=0.9):
 硬性规则：
 1. 只输出 JSON，不要解释，不要 markdown。
 2. title 必须是文件名里真实存在的作品名，不允许联想、不允许猜测其他作品。
-3. 遇到番组文件名时，优先保留原标题，如 Violet_Evergarden -> Violet Evergarden。
-4. 删除字幕组、分辨率、编码、语言标签、发布信息，如 KTXP、1080p、BDrip、GB、x264。
-5. season 默认 1。
-6. episode 必须是数字；像 [01] 这种优先识别为 episode。
-7. 如果无法确定 year，填 null。
-8. 如果文件名里没有明确作品名，title 设为空字符串，不要猜。
+3. 当文件名同时包含中文和英文标题时（如"迷宫饭.Dungeon.Meshi"），只保留其中一个：
+   - 优先保留英文标题（如 "Dungeon Meshi"）
+   - 如果英文部分不是完整标题，则保留中文标题
+4. 遇到番组文件名时，优先保留原标题，如 Violet_Evergarden -> Violet Evergarden。
+5. 删除字幕组、分辨率、编码、语言标签、发布信息，如 KTXP、1080p、BDrip、GB、x264。
+6. season 默认 1。
+7. episode 必须是数字；像 [01] 这种优先识别为 episode。
+8. 如果无法确定 year，填 null。
+9. 如果文件名里没有明确作品名，title 设为空字符串，不要猜。
 
 示例：
 输入: [KTXP][Dungeon Meshi][01][CHS][1080P][AVC].mkv
@@ -150,6 +153,9 @@ def parse_with_ollama(base_url, model, filename, temperature=0.2, top_p=0.9):
 
 输入: 蜡笔小新.2024.S01E05.1080p.mkv
 输出: {"title": "蜡笔小新", "year": 2024, "season": 1, "episode": 5}
+
+输入: 迷宫饭.Dungeon.Meshi.2024.第01话.简繁内封.1080p.mkv
+输出: {"title": "Dungeon Meshi", "year": 2024, "season": 1, "episode": 1}
 
 输入: The.Mandalorian.S03E04.2023.WEB-DL.mkv
 输出: {"title": "The Mandalorian", "year": 2023, "season": 3, "episode": 4}

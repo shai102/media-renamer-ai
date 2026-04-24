@@ -327,6 +327,45 @@ def derive_title_from_filename(pure_name):
     return clean_search_title(text)
 
 
+def split_mixed_title(title):
+    """Split mixed Chinese-English title into separate queries.
+
+    Example: "迷宫饭 Dungeon Meshi" -> ["Dungeon Meshi", "迷宫饭"]
+    """
+    if not title or not isinstance(title, str):
+        return []
+
+    text = title.strip()
+    # Check if title contains both Chinese and Latin characters
+    has_chinese = bool(re.search(r'[一-鿿]', text))
+    has_latin = bool(re.search(r'[a-zA-Z]', text))
+
+    if not (has_chinese and has_latin):
+        return []
+
+    # Split by common separators and whitespace
+    parts = re.split(r'[\s\.\-_]+', text)
+    chinese_parts = []
+    latin_parts = []
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if re.search(r'[一-鿿]', part):
+            chinese_parts.append(part)
+        elif re.search(r'[a-zA-Z]', part):
+            latin_parts.append(part)
+
+    results = []
+    if latin_parts:
+        results.append(' '.join(latin_parts))
+    if chinese_parts:
+        results.append(''.join(chinese_parts))
+
+    return results
+
+
 def build_query_titles(item, query_title, ai_data, g):
     if isinstance(item, dict):
         raw_name = item.get("old_name", "")
@@ -338,6 +377,8 @@ def build_query_titles(item, query_title, ai_data, g):
     pure, _ = os.path.splitext(raw_name)
     dir_title = os.path.basename(item_dir)
     guess_title = clean_search_title((g.get("title") if g else None) or "")
+
+    # Build base candidates
     candidates = [
         query_title,
         (ai_data or {}).get("title") if isinstance(ai_data, dict) else None,
@@ -346,6 +387,13 @@ def build_query_titles(item, query_title, ai_data, g):
         clean_search_title(pure),
         clean_search_title(dir_title),
     ]
+
+    # Add split variants for mixed Chinese-English titles
+    for candidate in list(candidates):
+        if candidate:
+            split_titles = split_mixed_title(candidate)
+            candidates.extend(split_titles)
+
     ordered = unique_keep_order(candidates)
     return [c for c in ordered if is_meaningful_query_title(c)]
 

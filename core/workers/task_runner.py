@@ -379,7 +379,9 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
             else gui._pick_season(pure, g, m.get("s", 1))
         )
 
-        raw_e = g.get("episode") or m.get("e", 1)
+        # Extract episode number from filename first, then fallback to metadata
+        extracted_ep = extract_episode_number(pure, g)
+        raw_e = extracted_ep if extracted_ep is not None else (g.get("episode") or m.get("e", 1))
         if isinstance(raw_e, list):
             raw_e = raw_e[0]
 
@@ -637,6 +639,9 @@ def process_task(gui, i, advance_progress=True):
             elif ai_mode_val == "disabled":
                 can_reuse_cached_parse = cached_parse_source != "ai"
 
+        # Check for folder ID early to skip AI recognition if folder ID exists
+        has_folder_id = bool(extract_db_id_from_path(item.path, mode))
+
         if can_reuse_cached_parse:
             t = cached_ai["title"]
             y = cached_ai.get("year")
@@ -690,7 +695,8 @@ def process_task(gui, i, advance_progress=True):
                     )
                     return
             else:
-                if ai_mode_val == "assist" and guessit_needs_assist:
+                # Skip AI recognition if folder has TMDB/BGM ID
+                if ai_mode_val == "assist" and guessit_needs_assist and not has_folder_id:
                     ai_data, ai_msg = _fetch_ai_parse(gui, pure_for_parse)
                     if not ai_data and is_ai_rate_limited_error(ai_msg):
                         _mark_ai_rate_limited(gui, item)

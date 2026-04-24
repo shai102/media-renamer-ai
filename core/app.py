@@ -115,7 +115,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v2.6")
+        self.root.title("媒体归档刮削助手 v2.7")
         self.root.geometry("1300x900")
         self.bootstrap_style = getattr(self.root, "style", None)
 
@@ -299,6 +299,15 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             relief="flat",
             font=("Microsoft YaHei UI", 10),
         )
+
+        # 尝试设置列分隔线颜色
+        try:
+            style.element_create("App.Treeview.separator", "from", "default")
+            style.layout("App.Treeview", [
+                ("App.Treeview.treearea", {"sticky": "nswe"})
+            ])
+        except:
+            pass
         style.configure(
             "App.Treeview.Heading",
             background=self.colors["panel"],
@@ -566,6 +575,26 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             selectmode="extended",
             style="App.Treeview",
         )
+
+        # 尝试多种方法设置列分隔线颜色
+        try:
+            # 方法1: 直接设置widget选项
+            self.tree.configure(separatorcolor="#4361ee")
+        except:
+            pass
+
+        try:
+            # 方法2: 使用tk.call
+            self.tree.tk.call(self.tree, "configure", "-separatorcolor", "#4361ee")
+        except:
+            pass
+
+        try:
+            # 方法3: 修改样式
+            style = ttk.Style()
+            style.map("App.Treeview", separatorcolor=[("", "#4361ee")])
+        except:
+            pass
         self.tree.tag_configure(
             "source",
             background="#eef5ff",
