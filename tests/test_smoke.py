@@ -1,6 +1,6 @@
 import unittest
 
-from ai.ollama_ai import _extract_siliconflow_content
+from ai.ollama_ai import _extract_siliconflow_content, is_ai_rate_limited_error
 from core.services.matcher_service import extract_ollama_model_names
 from core.services.naming_service import (
     can_reuse_dir_ai,
@@ -17,6 +17,7 @@ from core.workers.task_runner import (
     _is_meaningful_title,
 )
 from utils.helpers import (
+    build_db_query_plan,
     build_query_titles,
     format_error_message,
     parse_error_message,
@@ -35,6 +36,42 @@ class SmokeTests(unittest.TestCase):
                 {
                     "message": {
                         "content": '{"title":"Test","year":2024,"season":1,"episode":1}'
+                    }
+                }
+            ]
+        }
+        self.assertEqual(
+            _extract_siliconflow_content(payload),
+            '{"title":"Test","year":2024,"season":1,"episode":1}',
+        )
+
+    def test_extract_siliconflow_content_accepts_content_parts(self):
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": '{"title":"Test","year":2024,"season":1,"episode":1}',
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        self.assertEqual(
+            _extract_siliconflow_content(payload),
+            '{"title":"Test","year":2024,"season":1,"episode":1}',
+        )
+
+    def test_extract_siliconflow_content_falls_back_to_reasoning(self):
+        payload = {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "reasoning": '{"title":"Test","year":2024,"season":1,"episode":1}',
                     }
                 }
             ]
@@ -73,6 +110,15 @@ class SmokeTests(unittest.TestCase):
     def test_error_message_parse_legacy_text(self):
         self.assertEqual(parse_error_message("未配置TMDb Key")[0], "CONFIG")
 
+    def test_is_ai_rate_limited_error_detects_429(self):
+        self.assertTrue(
+            is_ai_rate_limited_error("HTTP:AI请求失败: 429 Client Error: Too Many Requests")
+        )
+        self.assertTrue(
+            is_ai_rate_limited_error("provider is temporarily rate-limited upstream")
+        )
+        self.assertFalse(is_ai_rate_limited_error("HTTP:AI请求失败: 500"))
+
     def test_build_query_titles_filters_generic_season_title(self):
         item = {
             "old_name": "Extracurricular.S01E01.2020.NF.WEB-DL.1080p.HEVC.DDP-Xiaomi.strm",
@@ -91,6 +137,20 @@ class SmokeTests(unittest.TestCase):
         g = {"title": "Extracurricular"}
         titles = build_query_titles(item, "Extracurricular", None, g)
         self.assertIn("Extracurricular", titles)
+
+    def test_build_db_query_plan_prefers_ai_only_when_guessit_title_missing(self):
+        item = {
+            "old_name": "[Lilith-Raws][Sousou no Frieren] - 01 [Baha][WEB-DL][1080p][AVC AAC][CHT].mkv",
+            "dir": r"Y:\test\AI_Assist_01_Sousou_no_Frieren",
+        }
+        plan = build_db_query_plan(
+            item,
+            "Sousou no Frieren",
+            {"title": "Sousou no Frieren"},
+            {},
+        )
+        self.assertEqual(plan[0], ["Sousou no Frieren"])
+        self.assertEqual(plan, [["Sousou no Frieren"]])
 
     def test_extract_explicit_season_from_sxxeyy(self):
         name = "Extracurricular.S01E01.2020.NF.WEB-DL.1080p.HEVC.strm"

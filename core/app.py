@@ -87,6 +87,7 @@ from utils.helpers import (
     ERROR_CODE_TIMEOUT,
     ERROR_CODE_UNKNOWN,
     USER_AGENT,
+    build_db_query_plan,
     build_query_titles,
     candidate_to_result,
     center_window,
@@ -114,7 +115,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v2.4")
+        self.root.title("媒体归档刮削助手 v2.5")
         self.root.geometry("1300x900")
         self.bootstrap_style = getattr(self.root, "style", None)
 
@@ -1856,40 +1857,17 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
     def _resolve_db_match(self, item, query_title, year, is_tv, mode, ai_data, g):
         """解析数据库候选，必要时调用本地模型或弹窗手动确认"""
         source_name = "TMDb" if mode == "siliconflow_tmdb" else "BGM"
-        query_titles = build_query_titles(item, query_title, ai_data, g)
+        query_groups = build_db_query_plan(item, query_title, ai_data, g)
         merged = []
         seen_ids = set()
         used_query = query_title
         _first_hit = False
 
-        for q in query_titles:
-            if mode == "siliconflow_tmdb":
-                cur = fetch_tmdb_candidates(q, year, is_tv, self.tmdb_api_key.get())
-            else:
-                cur = fetch_bgm_candidates(q, year, self.bgm_api_key.get())
-
-            if not cur:
-                continue
-
-            if not _first_hit:
-                used_query = q
-                _first_hit = True
-
-            for cand in cur:
-                cid = str(cand.get("id") or "")
-                if not cid or cid in seen_ids:
-                    continue
-                seen_ids.add(cid)
-                merged.append(cand)
-
-            # 候选足够多时提前结束，避免无效请求拖慢速度
-            if len(merged) >= 10:
-                break
-
-        bgm_fallback = False
-        if not merged and mode == "siliconflow_tmdb":
+        def _search_queries(query_titles, fetch_func, limit=10):
+            nonlocal used_query, _first_hit
+            found = []
             for q in query_titles:
-                cur = fetch_bgm_candidates(q, year, self.bgm_api_key.get())
+                cur = fetch_func(q)
                 if not cur:
                     continue
 
@@ -1902,9 +1880,39 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                     if not cid or cid in seen_ids:
                         continue
                     seen_ids.add(cid)
-                    merged.append(cand)
+                    found.append(cand)
 
-                if len(merged) >= 10:
+                if len(found) >= limit:
+                    break
+            return found
+
+        for query_titles in query_groups:
+            if mode == "siliconflow_tmdb":
+                current = _search_queries(
+                    query_titles,
+                    lambda q: fetch_tmdb_candidates(
+                        q, year, is_tv, self.tmdb_api_key.get()
+                    ),
+                )
+            else:
+                current = _search_queries(
+                    query_titles,
+                    lambda q: fetch_bgm_candidates(q, year, self.bgm_api_key.get()),
+                )
+
+            if current:
+                merged.extend(current)
+                break
+
+        bgm_fallback = False
+        if not merged and mode == "siliconflow_tmdb":
+            for query_titles in query_groups:
+                current = _search_queries(
+                    query_titles,
+                    lambda q: fetch_bgm_candidates(q, year, self.bgm_api_key.get()),
+                )
+                if current:
+                    merged.extend(current)
                     break
 
             if merged:
@@ -2018,9 +2026,9 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         """运行预览线程池"""
         return worker_run_preview_pool(self)
 
-    def process_task(self, i):
+    def process_task(self, i, advance_progress=True):
         """处理单个任务"""
-        return worker_process_task(self, i)
+        return worker_process_task(self, i, advance_progress=advance_progress)
 
     def start_run_logic(self, run_mode):
         """开始重命名逻辑"""

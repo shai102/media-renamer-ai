@@ -1,6 +1,9 @@
 import logging
 import json
 import re
+import threading
+import time
+from collections import deque
 
 import requests
 
@@ -17,6 +20,12 @@ from utils.helpers import (
 )
 
 
+AI_RATE_LIMIT_MAX_REQUESTS = 20
+AI_RATE_LIMIT_WINDOW_SECONDS = 60.0
+_ai_request_lock = threading.Lock()
+_ai_request_times = deque()
+
+
 def _response_body_snippet(response, limit=300):
     if response is None:
         return ""
@@ -28,6 +37,52 @@ def _response_body_snippet(response, limit=300):
     if len(compact) > limit:
         return compact[:limit] + "..."
     return compact
+
+
+def _throttle_ai_request():
+    """Throttle outbound AI requests to stay under upstream minute caps."""
+    while True:
+        wait_seconds = 0.0
+        with _ai_request_lock:
+            now = time.monotonic()
+            while _ai_request_times and now - _ai_request_times[0] >= AI_RATE_LIMIT_WINDOW_SECONDS:
+                _ai_request_times.popleft()
+
+            if len(_ai_request_times) < AI_RATE_LIMIT_MAX_REQUESTS:
+                _ai_request_times.append(now)
+                return
+
+            wait_seconds = AI_RATE_LIMIT_WINDOW_SECONDS - (now - _ai_request_times[0])
+
+        time.sleep(max(wait_seconds, 0.05))
+
+
+def is_ai_rate_limited_error(message):
+    text = str(message or "").lower()
+    return "429" in text or "rate limit" in text or "rate-limit" in text
+
+
+def _extract_text_from_content(value):
+    """Extract plain text from OpenAI-compatible content variants."""
+    if isinstance(value, str):
+        return value.strip()
+
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            text = _extract_text_from_content(item)
+            if text:
+                parts.append(text)
+        return "\n".join(parts).strip()
+
+    if isinstance(value, dict):
+        for key in ("text", "content", "value", "reasoning", "reasoning_content"):
+            text = _extract_text_from_content(value.get(key))
+            if text:
+                return text
+        return ""
+
+    return ""
 
 
 def _extract_siliconflow_content(payload):
@@ -47,11 +102,17 @@ def _extract_siliconflow_content(payload):
     if not isinstance(message, dict):
         raise ValueError("AI响应缺少message")
 
-    content = message.get("content")
-    # Qwen3 思考模式下 content 为空，回复在 reasoning_content 里
-    if not isinstance(content, str) or not content.strip():
-        content = message.get("reasoning_content") or ""
-    if not isinstance(content, str) or not content.strip():
+    content = _extract_text_from_content(message.get("content"))
+    if not content:
+        for key in ("reasoning_content", "reasoning", "output_text"):
+            content = _extract_text_from_content(message.get(key))
+            if content:
+                break
+    if not content:
+        content = _extract_text_from_content(first_choice.get("text"))
+    if not content:
+        content = _extract_text_from_content(payload.get("output_text"))
+    if not content:
         raise ValueError("AI响应content为空")
 
     return content.strip()
@@ -188,6 +249,7 @@ def fetch_siliconflow_info(
     }
 
     try:
+        _throttle_ai_request()
         response = session.post(
             url, json=payload, headers=headers, timeout=TIMEOUT_AI_CHAT
         )
@@ -298,12 +360,21 @@ def test_silicon_api(api_url, api_key, model_name):
 
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": "Hi"}],
+        "messages": [
+            {
+                "role": "system",
+                "content": "Reply with OK only. Do not use markdown or reasoning.",
+            },
+            {"role": "user", "content": "Reply with OK only."},
+        ],
+        "temperature": 0,
+        "top_p": 1,
         "max_tokens": 10,
         "enable_thinking": False,
     }
 
     try:
+        _throttle_ai_request()
         response = session.post(
             url, json=payload, headers=headers, timeout=TIMEOUT_AI_TEST
         )

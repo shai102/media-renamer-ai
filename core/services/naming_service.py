@@ -256,6 +256,11 @@ def friendly_status_text(message):
     if not code:
         return raw_text
 
+    if code == ERROR_CODE_HTTP and (
+        "429" in raw_text.lower() or "rate limit" in raw_text.lower()
+    ):
+        return "AI接口限流，请稍后重试"
+
     template = {
         ERROR_CODE_TIMEOUT: "请求超时，请稍后重试",
         ERROR_CODE_CONFIG: "配置缺失，请检查密钥设置",

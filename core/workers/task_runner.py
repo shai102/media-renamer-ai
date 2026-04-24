@@ -8,7 +8,7 @@ from tkinter import messagebox
 
 from guessit import guessit
 
-from ai.ollama_ai import fetch_siliconflow_info
+from ai.ollama_ai import fetch_siliconflow_info, is_ai_rate_limited_error
 from db.tmdb_api import (
     fetch_bgm_by_id,
     fetch_hybrid_episode_meta,
@@ -116,6 +116,54 @@ def _fetch_ai_parse(gui, pure_for_parse):
             gui._get_ai_top_p(),
         )
     return None, ""
+
+
+def _mark_ai_rate_limited(gui, item):
+    item.metadata = {"id": "None", "parse_source": "ai"}
+    item.new_name_only = ""
+    item.full_target = ""
+    item.parse_source = "ai"
+    gui.root.after(
+        0,
+        lambda: gui.update_item_display(
+            item,
+            title="AI限流",
+            match_id="None",
+            target="(AI 接口限流，请稍后重试)",
+            status="AI限流，请稍后重试",
+        ),
+    )
+
+
+def _is_ai_rate_limited_item(item):
+    status_text = str(getattr(item, "status_text", "") or "")
+    return "AI限流" in status_text and str((getattr(item, "metadata", {}) or {}).get("id") or "None") == "None"
+
+
+def _retry_rate_limited_siblings(gui, current_index, dir_p):
+    retry_indices = []
+    with gui.cache_lock:
+        inflight = getattr(gui, "ai_retry_inflight", None)
+        if inflight is None:
+            inflight = set()
+            gui.ai_retry_inflight = inflight
+
+        for idx, other in enumerate(gui.file_list):
+            if idx == current_index or other.dir != dir_p:
+                continue
+            if not _is_ai_rate_limited_item(other):
+                continue
+            if other.id in inflight:
+                continue
+            inflight.add(other.id)
+            retry_indices.append((idx, other.id))
+
+    for idx, item_id in retry_indices:
+        try:
+            gui.process_task(idx, advance_progress=False)
+        finally:
+            with gui.cache_lock:
+                gui.ai_retry_inflight.discard(item_id)
 
 
 def _derive_guessit_fields(gui, pure, dir_p, g, extracted_ep):
@@ -501,7 +549,7 @@ def run_preview_pool(gui):
     gui.root.after(0, _finish_preview_ui)
 
 
-def process_task(gui, i):
+def process_task(gui, i, advance_progress=True):
     """Process a single preview task."""
     item = gui.file_list[i]
 
@@ -623,6 +671,9 @@ def process_task(gui, i):
             else:
                 if ai_mode_val == "assist" and guessit_needs_assist:
                     ai_data, ai_msg = _fetch_ai_parse(gui, pure_for_parse)
+                    if not ai_data and is_ai_rate_limited_error(ai_msg):
+                        _mark_ai_rate_limited(gui, item)
+                        return
                     if ai_data:
                         t, y, s, e, parse_source = _merge_assist_parse(
                             gui,
@@ -722,7 +773,10 @@ def process_task(gui, i):
                         not db_c or (len(db_c) >= 2 and db_c[1] == "None")
                     ):
                         if not ai_data:
-                            ai_data, _ = _fetch_ai_parse(gui, pure_for_parse)
+                            ai_data, retry_ai_msg = _fetch_ai_parse(gui, pure_for_parse)
+                            if not ai_data and is_ai_rate_limited_error(retry_ai_msg):
+                                _mark_ai_rate_limited(gui, item)
+                                return
                             if ai_data:
                                 t, y, s, e, parse_source = _merge_assist_parse(
                                     gui,
@@ -928,6 +982,8 @@ def process_task(gui, i):
                 status=gui._build_status_text(ai_msg, db_m),
             ),
         )
+        if str(item.metadata.get("id") or "None") != "None":
+            _retry_rate_limited_siblings(gui, i, dir_p)
     except Exception as ex:
         logging.error(f"处理文件 {item.old_name} 时出错: {ex}")
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"异常: {str(ex)[:50]}")
@@ -942,7 +998,8 @@ def process_task(gui, i):
             ),
         )
     finally:
-        gui.root.after(0, lambda: gui.pbar.step(1))
+        if advance_progress:
+            gui.root.after(0, lambda: gui.pbar.step(1))
 
 
 def run_execution(gui, run_mode):
