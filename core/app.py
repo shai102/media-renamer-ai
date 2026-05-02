@@ -29,10 +29,12 @@ from db.tmdb_api import (
     fetch_tmdb_season_poster,
 )
 from core.services.matcher_service import (
+    auto_pick_candidate_by_score,
     get_embedding,
     list_ollama_models,
     parse_with_ollama,
     pick_candidate_with_ollama,
+    pick_candidate_with_openai_compatible,
     rerank_candidates_with_embedding,
 )
 from core.services.template_service import (
@@ -115,7 +117,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v2.7")
+        self.root.title("媒体归档刮削助手 v2.8")
         self.root.geometry("1300x900")
         self.bootstrap_style = getattr(self.root, "style", None)
 
@@ -126,6 +128,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         self.manual_locks = {}
         self.forced_seasons = {}
         self.forced_offsets = {}
+        self.dir_parse_events = {}
         self.db_resolution_events = {}
         self.cache_lock = threading.Lock()
         self.file_write_lock = threading.Lock()
@@ -1704,6 +1707,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         """是否可用本地 embedding 做候选重排"""
         return bool(
             self.use_embedding_rank.get()
+            and self.prefer_ollama.get()
             and self.ollama_url.get().strip()
             and self.embedding_model.get().strip()
         )
@@ -1774,6 +1778,37 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             candidates,
             self._get_ai_temperature(),
         )
+
+    def _can_use_online_ai_for_pick(self):
+        """Return whether online AI should judge DB candidates."""
+        return bool(
+            not self.prefer_ollama.get()
+            and self.sf_api_key.get().strip()
+            and self.sf_api_url.get().strip()
+            and self.sf_model.get().strip()
+        )
+
+    def _pick_candidate_with_online_ai(
+        self, item, query_title, year, is_tv, source_name, candidates
+    ):
+        """使用在线 OpenAI 兼容接口在多个候选中做判定"""
+        return pick_candidate_with_openai_compatible(
+            self.sf_api_url.get().strip(),
+            self.sf_api_key.get().strip(),
+            self.sf_model.get().strip(),
+            item,
+            query_title,
+            year,
+            is_tv,
+            source_name,
+            candidates,
+            self._get_ai_temperature(),
+            self._get_ai_top_p(),
+        )
+
+    def _auto_pick_candidate_by_score(self, query_title, year, source_name, candidates):
+        """通用候选评分判定，供 GUI 和自动化流程共用。"""
+        return auto_pick_candidate_by_score(query_title, year, source_name, candidates)
 
     def _request_manual_candidate_choice(
         self, item, query_title, source_name, candidates, recognized_title=None
@@ -1857,16 +1892,36 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 hit_msg += f" ({emb_msg})"
             return candidate_to_result(emb_pick, hit_msg)
 
-        chosen, reason = self._pick_candidate_with_ollama(
-            item, query_title, year, is_tv, source_name, ranked_candidates
-        )
+        pick_label = "Ollama判定"
+        if self._can_use_online_ai_for_pick():
+            chosen, reason = self._pick_candidate_with_online_ai(
+                item, query_title, year, is_tv, source_name, ranked_candidates
+            )
+            pick_label = "在线AI判定"
+        else:
+            chosen, reason = self._pick_candidate_with_ollama(
+                item, query_title, year, is_tv, source_name, ranked_candidates
+            )
         if chosen:
-            hit_msg = f"Ollama判定/{source_name}命中"
+            hit_msg = f"{pick_label}/{source_name}命中"
             if emb_msg:
                 hit_msg += f" ({emb_msg})"
             if reason:
                 hit_msg += f" ({reason})"
             return candidate_to_result(chosen, hit_msg)
+
+        auto_pick, auto_reason = self._auto_pick_candidate_by_score(
+            query_title, year, source_name, ranked_candidates
+        )
+        if auto_pick:
+            hit_msg = f"自动评分判定/{source_name}命中"
+            if emb_msg:
+                hit_msg += f" ({emb_msg})"
+            if reason:
+                hit_msg += f" ({pick_label}: {reason})"
+            if auto_reason:
+                hit_msg += f" ({auto_reason})"
+            return candidate_to_result(auto_pick, hit_msg)
 
         manual_choice = self._request_manual_candidate_choice(
             item,

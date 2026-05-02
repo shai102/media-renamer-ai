@@ -106,6 +106,13 @@ class ListMixin:
             self.manual_locks.clear()
             self.forced_seasons.clear()
             self.forced_offsets.clear()
+            for evt in getattr(self, "dir_parse_events", {}).values():
+                try:
+                    evt.set()
+                except Exception as err:
+                    logging.debug(f"释放目录解析等待事件失败: {err}")
+            if hasattr(self, "dir_parse_events"):
+                self.dir_parse_events.clear()
             self.db_resolution_events.clear()
 
         clear_api_cache_file()

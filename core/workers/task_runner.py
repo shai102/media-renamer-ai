@@ -1,6 +1,7 @@
 ﻿import logging
 import os
 import re
+import threading
 import tkinter as tk
 import time
 
@@ -280,6 +281,65 @@ def _build_dir_cache_entry(
         }
     )
     return cache_data
+
+
+def _dir_cache_key(dir_path, season):
+    """Scope directory parse reuse to one real folder and one season."""
+    dir_key = os.path.normcase(os.path.normpath(str(dir_path or "")))
+    return f"{dir_key}||season={safe_int(season, 1)}"
+
+
+def _can_reuse_same_folder_season_cache(cached_ai, current_season, guess_data=None):
+    """Trust a parse cache inside the same folder+season unless year conflicts."""
+    if not isinstance(cached_ai, dict):
+        return False
+
+    cached_season = safe_int(
+        cached_ai.get("cache_season", cached_ai.get("season")),
+        safe_int(current_season, 1),
+    )
+    if cached_season != safe_int(current_season, 1):
+        return False
+
+    cached_year = safe_str(cached_ai.get("year"))
+    guess_year = safe_str((guess_data or {}).get("year"))
+    if cached_year and guess_year and cached_year != guess_year:
+        return False
+
+    return True
+
+
+def _store_dir_parse_cache(
+    gui,
+    cache_key,
+    ai_data,
+    title,
+    year,
+    season,
+    episode,
+    parse_source,
+    aliases=None,
+    cache_season=None,
+):
+    cache_entry = _build_dir_cache_entry(
+        ai_data, title, year, season, episode, parse_source, aliases
+    )
+    cache_entry["cache_season"] = safe_int(
+        season if cache_season is None else cache_season,
+        safe_int(season, 1),
+    )
+    gui.dir_cache[cache_key] = cache_entry
+    return cache_entry
+
+
+def _release_dir_parse_event(gui, cache_key, event):
+    if not event:
+        return
+    with gui.cache_lock:
+        events = getattr(gui, "dir_parse_events", {})
+        if events.get(cache_key) is event:
+            events.pop(cache_key, None)
+    event.set()
 
 
 def _merge_assist_parse(
@@ -625,13 +685,31 @@ def process_task(gui, i, advance_progress=True):
         ai_mode_obj = getattr(gui, "ai_mode", None)
         ai_mode_val = str(ai_mode_obj.get() if ai_mode_obj else "assist").strip().lower()
 
+        dir_cache_key = _dir_cache_key(dir_p, guess_season)
+        dir_parse_event = None
+        is_parse_resolver = False
         with gui.cache_lock:
-            cached_ai = gui.dir_cache.get(dir_p)
+            cached_ai = gui.dir_cache.get(dir_cache_key)
+            if not cached_ai:
+                if not hasattr(gui, "dir_parse_events"):
+                    gui.dir_parse_events = {}
+                dir_parse_event = gui.dir_parse_events.get(dir_cache_key)
+                if dir_parse_event is None:
+                    dir_parse_event = threading.Event()
+                    gui.dir_parse_events[dir_cache_key] = dir_parse_event
+                    is_parse_resolver = True
+
+        if not cached_ai and dir_parse_event and not is_parse_resolver:
+            if not dir_parse_event.wait(timeout=120):
+                logging.warning("等待同目录解析缓存超时，将单独识别当前文件")
+            with gui.cache_lock:
+                cached_ai = gui.dir_cache.get(dir_cache_key)
 
         parse_source = "guessit"
         cached_parse_source = str((cached_ai or {}).get("parse_source") or "guessit")
-        can_reuse_cached_parse = bool(cached_ai) and gui._can_reuse_dir_ai(
-            cached_ai, pure, g
+        can_reuse_cached_parse = bool(cached_ai) and (
+            _can_reuse_same_folder_season_cache(cached_ai, guess_season, g)
+            or gui._can_reuse_dir_ai(cached_ai, pure, g)
         )
         if can_reuse_cached_parse:
             if ai_mode_val == "force":
@@ -651,6 +729,7 @@ def process_task(gui, i, advance_progress=True):
             parse_source = cached_ai.get("parse_source", "guessit")
             ai_msg = _cache_reuse_status(parse_source)
         else:
+            ai_parse_succeeded = False
             ai_data = None
             t = guess_title
             y = guess_year
@@ -662,6 +741,7 @@ def process_task(gui, i, advance_progress=True):
                 ai_data, ai_msg = _fetch_ai_parse(gui, pure_for_parse)
 
                 if ai_data:
+                    ai_parse_succeeded = True
                     t = ai_data.get("title", "未知")
                     y = ai_data.get("year")
                     ai_season = safe_int(ai_data.get("season"), 1)
@@ -675,14 +755,24 @@ def process_task(gui, i, advance_progress=True):
                     )
                     parse_source = "ai"
                     with gui.cache_lock:
-                        gui.dir_cache[dir_p] = _build_dir_cache_entry(
-                            ai_data, t, y, s, e, "ai", cache_title_aliases
+                        _store_dir_parse_cache(
+                            gui,
+                            dir_cache_key,
+                            ai_data,
+                            t,
+                            y,
+                            s,
+                            e,
+                            "ai",
+                            cache_title_aliases,
+                            cache_season=guess_season,
                         )
                 else:
                     item.metadata = {"id": "None", "parse_source": "ai"}
                     item.new_name_only = ""
                     item.full_target = ""
                     item.parse_source = "ai"
+                    _release_dir_parse_event(gui, dir_cache_key, dir_parse_event if is_parse_resolver else None)
                     gui.root.after(
                         0,
                         lambda: gui.update_item_display(
@@ -700,8 +790,10 @@ def process_task(gui, i, advance_progress=True):
                     ai_data, ai_msg = _fetch_ai_parse(gui, pure_for_parse)
                     if not ai_data and is_ai_rate_limited_error(ai_msg):
                         _mark_ai_rate_limited(gui, item)
+                        _release_dir_parse_event(gui, dir_cache_key, dir_parse_event if is_parse_resolver else None)
                         return
                     if ai_data:
+                        ai_parse_succeeded = True
                         t, y, s, e, parse_source = _merge_assist_parse(
                             gui,
                             pure,
@@ -718,17 +810,39 @@ def process_task(gui, i, advance_progress=True):
                             ai_msg = "AI辅助"
                         elif parse_source == "ai":
                             ai_msg = "AI识别"
-                if parse_source == "guessit" and guessit_confident:
+                if parse_source == "guessit" and (guessit_confident or ai_parse_succeeded):
                     with gui.cache_lock:
-                        if dir_p not in gui.dir_cache:
-                            gui.dir_cache[dir_p] = _build_dir_cache_entry(
-                                None, t, y, s, e, "guessit", cache_title_aliases
+                        if dir_cache_key not in gui.dir_cache:
+                            _store_dir_parse_cache(
+                                gui,
+                                dir_cache_key,
+                                None,
+                                t,
+                                y,
+                                s,
+                                e,
+                                "guessit",
+                                cache_title_aliases,
+                                cache_season=guess_season,
                             )
                 elif parse_source != "guessit":
                     with gui.cache_lock:
-                        gui.dir_cache[dir_p] = _build_dir_cache_entry(
-                            ai_data, t, y, s, e, parse_source, cache_title_aliases
+                        _store_dir_parse_cache(
+                            gui,
+                            dir_cache_key,
+                            ai_data,
+                            t,
+                            y,
+                            s,
+                            e,
+                            parse_source,
+                            cache_title_aliases,
+                            cache_season=guess_season,
                         )
+
+        _release_dir_parse_event(
+            gui, dir_cache_key, dir_parse_event if is_parse_resolver else None
+        )
 
         if SPECIAL_TAG_RE.search(pure):
             # 若文件名已有显式 S\d+E\d+ 标记（如 S01E01），尊重该标记，
@@ -768,8 +882,6 @@ def process_task(gui, i, advance_progress=True):
             pending_event = gui.db_resolution_events.get(cache_key)
             is_resolver = False
             if not db_c and pending_event is None:
-                import threading
-
                 pending_event = threading.Event()
                 gui.db_resolution_events[cache_key] = pending_event
                 is_resolver = True
@@ -822,7 +934,9 @@ def process_task(gui, i, advance_progress=True):
                                 elif parse_source == "ai":
                                     ai_msg = "AI识别"
                                 with gui.cache_lock:
-                                    gui.dir_cache[dir_p] = _build_dir_cache_entry(
+                                    _store_dir_parse_cache(
+                                        gui,
+                                        dir_cache_key,
                                         ai_data,
                                         t,
                                         y,
@@ -830,6 +944,7 @@ def process_task(gui, i, advance_progress=True):
                                         e,
                                         parse_source,
                                         cache_title_aliases,
+                                        cache_season=guess_season,
                                     )
 
                         if ai_data:
@@ -1012,6 +1127,10 @@ def process_task(gui, i, advance_progress=True):
         if str(item.metadata.get("id") or "None") != "None":
             _retry_rate_limited_siblings(gui, i, dir_p)
     except Exception as ex:
+        if locals().get("is_parse_resolver"):
+            _release_dir_parse_event(
+                gui, locals().get("dir_cache_key"), locals().get("dir_parse_event")
+            )
         logging.error(f"处理文件 {item.old_name} 时出错: {ex}")
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"异常: {str(ex)[:50]}")
         gui.root.after(
@@ -1047,4 +1166,3 @@ def run_scrape_execution(gui):
 def process_one_file_scrape(gui, item):
     """Process single file scrape-only (write NFO and download images)."""
     return execution_process_one_file_scrape(gui, item)
-

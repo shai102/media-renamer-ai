@@ -14,6 +14,7 @@ from db.tmdb_api import (
     fetch_bgm_by_id,
     fetch_tmdb_by_id,
 )
+from core.services.matcher_service import auto_pick_candidate_by_score
 from utils.helpers import (
     ERROR_CODE_CONFIG,
     ERROR_CODE_HTTP,
@@ -398,6 +399,27 @@ def request_manual_candidate_choice(
     item_dir = item.dir if hasattr(item, 'dir') else (item.get('dir') if isinstance(item, dict) else None)
     if item_dir and item_dir in gui.preview_skip_dirs:
         return None
+
+    auto_query = recognized_title or query_title
+    auto_pick, auto_reason = auto_pick_candidate_by_score(
+        auto_query, None, source_name, candidates
+    )
+
+    if auto_pick:
+        logging.info(
+            "候选弹窗前自动判定命中: title=%s source=%s id=%s reason=%s",
+            auto_query,
+            source_name,
+            auto_pick.get("id"),
+            auto_reason,
+        )
+        gui.root.after(
+            0,
+            lambda reason=auto_reason: gui.update_item_display(
+                item, status=f"自动评分判定/{source_name}命中 ({reason})"
+            ),
+        )
+        return auto_pick
 
     result_holder = {"selected": None}
     done_event = threading.Event()

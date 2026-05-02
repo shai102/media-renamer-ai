@@ -6,7 +6,11 @@ from ai.ollama_ai import (
     _should_retry_without_disabled_reasoning,
     is_ai_rate_limited_error,
 )
-from core.services.matcher_service import extract_ollama_model_names
+from core.services.matcher_service import (
+    _parse_candidate_pick_response,
+    auto_pick_candidate_by_score,
+    extract_ollama_model_names,
+)
 from core.services.naming_service import (
     can_reuse_dir_ai,
     extract_explicit_season,
@@ -18,6 +22,8 @@ from core.services.template_service import (
 )
 from core.workers.task_runner import (
     SPECIAL_TAG_RE,
+    _can_reuse_same_folder_season_cache,
+    _dir_cache_key,
     _guessit_needs_assist,
     _is_meaningful_title,
 )
@@ -270,6 +276,93 @@ class SmokeTests(unittest.TestCase):
                 guess_data,
             )
         )
+
+    def test_same_folder_season_cache_reuses_even_when_title_guess_is_noisy(self):
+        cached_ai = {
+            "title": "想要成为影之实力者！",
+            "year": 2023,
+            "season": 1,
+            "cache_season": 1,
+        }
+        guess_data = {"title": "Nekomo kissaten VCB Studio Ma10p flac JPTC"}
+        self.assertTrue(
+            _can_reuse_same_folder_season_cache(cached_ai, 1, guess_data)
+        )
+
+    def test_same_folder_season_cache_does_not_cross_seasons(self):
+        cached_ai = {
+            "title": "想要成为影之实力者！",
+            "season": 2,
+            "cache_season": 1,
+        }
+        self.assertFalse(_can_reuse_same_folder_season_cache(cached_ai, 2, {}))
+        self.assertTrue(_can_reuse_same_folder_season_cache(cached_ai, 1, {}))
+        self.assertNotEqual(
+            _dir_cache_key(r"D:\Anime\Show", 1),
+            _dir_cache_key(r"D:\Anime\Show", 2),
+        )
+
+    def test_auto_pick_candidate_uses_general_metadata_confidence(self):
+        candidates = [
+            {
+                "title": "想要成为影之实力者！",
+                "alt_title": "陰の実力者になりたくて！",
+                "id": "119495",
+                "rating": 8.0,
+                "release": "2022-10-05",
+                "meta": {
+                    "overview": "A boy dreams of becoming a hidden mastermind.",
+                    "poster": "/poster.jpg",
+                    "original_title": "陰の実力者になりたくて！",
+                },
+            },
+            {
+                "title": "Karens Kagebord",
+                "alt_title": "",
+                "id": "bad",
+                "rating": 0,
+                "release": "",
+                "meta": {"poster": "/poster2.jpg"},
+            },
+        ]
+        picked, reason = auto_pick_candidate_by_score(
+            "Kage no Jitsuryokusha ni Naritakute!", None, "TMDb", candidates
+        )
+        self.assertIs(picked, candidates[0])
+        self.assertIn("高置信", reason)
+
+    def test_auto_pick_candidate_refuses_low_confidence_close_candidates(self):
+        candidates = [
+            {
+                "title": "Alpha",
+                "id": "1",
+                "rating": 0,
+                "release": "",
+                "meta": {},
+            },
+            {
+                "title": "Alpine",
+                "id": "2",
+                "rating": 0,
+                "release": "",
+                "meta": {},
+            },
+        ]
+        picked, reason = auto_pick_candidate_by_score(
+            "Alp", None, "TMDb", candidates
+        )
+        self.assertIsNone(picked)
+        self.assertIn("自动评分不足", reason)
+
+    def test_parse_candidate_pick_response_accepts_loose_json(self):
+        parsed = _parse_candidate_pick_response('{"pick": 1 "reason": "first"}')
+        self.assertEqual(parsed["pick"], 1)
+        self.assertEqual(parsed["reason"], "first")
+
+    def test_parse_candidate_pick_response_accepts_plain_pick(self):
+        parsed = _parse_candidate_pick_response("pick: 2 reason: \"better title\"")
+        self.assertEqual(parsed["pick"], 2)
+        self.assertEqual(parsed["reason"], "better title")
 
     def test_render_filename_template_legacy_still_works(self):
         context = build_filename_context(
