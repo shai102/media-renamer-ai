@@ -31,6 +31,7 @@ from db.tmdb_api import fetch_tmdb_episode_meta_raw
 from utils.helpers import (
     build_db_query_plan,
     build_query_titles,
+    extract_episode_number,
     format_error_message,
     parse_error_message,
     safe_filename,
@@ -41,6 +42,17 @@ class SmokeTests(unittest.TestCase):
     def test_safe_filename_replaces_illegal_chars(self):
         original = 'a<b>:"c/\\d|?*.'
         self.assertEqual(safe_filename(original), "a_b___c__d___")
+
+    def test_extract_episode_prefers_explicit_bracket_number(self):
+        name = (
+            "[Nekomoe kissaten&VCB-Studio] Kage no Jitsuryokusha ni Naritakute! "
+            "S2 [10][Ma10p_1080p][x265_flac].strm"
+        )
+        self.assertEqual(extract_episode_number(name, {"episode": 1}), 10)
+
+    def test_extract_episode_ignores_bracketed_year_noise(self):
+        name = "[Group] Some Anime [2024][1080p][x265].mkv"
+        self.assertIsNone(extract_episode_number(name))
 
     def test_extract_siliconflow_content_success(self):
         payload = {

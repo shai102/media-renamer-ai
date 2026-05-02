@@ -724,7 +724,9 @@ def process_task(gui, i, advance_progress=True):
             t = cached_ai["title"]
             y = cached_ai.get("year")
             s = gui._pick_season(pure, g, cached_ai.get("season") or 1)
-            e = extracted_ep or cached_ai.get("episode") or 1
+            # Directory cache is shared by sibling files; never reuse another
+            # file's episode number for the current file.
+            e = extracted_ep or guess_episode
             ai_data = cached_ai
             parse_source = cached_ai.get("parse_source", "guessit")
             ai_msg = _cache_reuse_status(parse_source)
