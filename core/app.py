@@ -91,6 +91,8 @@ from utils.helpers import (
     USER_AGENT,
     build_db_query_plan,
     build_query_titles,
+    candidate_looks_like_extra_title,
+    candidate_looks_like_unrequested_variant,
     candidate_to_result,
     center_window,
     clean_search_title,
@@ -107,6 +109,7 @@ from utils.helpers import (
     safe_str,
     save_image,
     session,
+    text_mentions_extra_title,
     write_nfo,
     _nfo_has_empty_plot,
 )
@@ -117,7 +120,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v2.9")
+        self.root.title("媒体归档刮削助手 v3.0")
         self.root.geometry("1300x900")
         self.bootstrap_style = getattr(self.root, "style", None)
 
@@ -1831,6 +1834,53 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             self, item, query_title, source_name, candidates, result_holder, done_event
         )
 
+    def _pick_strong_tmdb_direct_hit(self, query_titles, year, candidates):
+        """Trust a direct TMDb rank-1 hit before semantic rerank/model override."""
+        requested_year = str(year or "").strip()
+        preferred_norms = []
+        seen_norms = set()
+        for raw in query_titles or []:
+            text = str(raw or "").strip()
+            norm = normalize_compare_text(text)
+            if not norm or len(norm) < 6 or norm in seen_norms:
+                continue
+            seen_norms.add(norm)
+            preferred_norms.append(norm)
+
+        if not preferred_norms:
+            return None, ""
+
+        grouped = {}
+        for candidate in candidates or []:
+            meta = candidate.get("meta") or {}
+            search_query = str(meta.get("search_query") or "").strip()
+            search_norm = normalize_compare_text(search_query)
+            if not search_norm:
+                continue
+            grouped.setdefault(search_norm, []).append(candidate)
+
+        for norm in preferred_norms:
+            hits = grouped.get(norm) or []
+            if not hits:
+                continue
+
+            hits = sorted(
+                hits,
+                key=lambda cand: (
+                    safe_int((cand.get("meta") or {}).get("search_rank"), 999),
+                    -float(cand.get("rating") or 0),
+                ),
+            )
+            top = hits[0]
+            top_meta = top.get("meta") or {}
+            top_rank = safe_int(top_meta.get("search_rank"), 999)
+            top_year = extract_year_from_release(top.get("release") or "")
+            year_ok = not requested_year or not top_year or top_year == requested_year
+            if top_rank == 1 and year_ok:
+                return top, str(top_meta.get("search_query") or "")
+
+        return None, ""
+
     def _select_best_db_match(
         self,
         item,
@@ -1844,8 +1894,57 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         """从候选列表中自动或手动选择最终匹配项"""
         if not candidates:
             return query_title, "None", f"{source_name}无结果", {}
+        rank_pick_allowed = True
+        raw_name = ""
+        if isinstance(item, dict):
+            raw_name = str(item.get("old_name") or "")
+        else:
+            raw_name = str(getattr(item, "old_name", "") or "")
+        if source_name.startswith("TMDb") and getattr(item, "old_name", None):
+            derived_query = derive_title_from_filename(raw_name)
+            if (
+                derived_query
+                and normalize_compare_text(derived_query)
+                != normalize_compare_text(query_title)
+            ):
+                rank_pick_allowed = False
 
-        if len(candidates) == 1:
+        if source_name.startswith("TMDb") and not text_mentions_extra_title(
+            f"{raw_name} {query_title}"
+        ):
+            regular_candidates = [
+                c for c in candidates if not candidate_looks_like_extra_title(c)
+            ]
+            if regular_candidates:
+                candidates = regular_candidates
+            elif candidates:
+                return (
+                    query_title,
+                    "None",
+                    "TMDb候选疑似总集篇或特别篇，需手动确认",
+                    {},
+                )
+
+        if source_name.startswith("TMDb"):
+            source_text = f"{raw_name} {query_title}"
+            regular_candidates = [
+                c
+                for c in candidates
+                if not candidate_looks_like_unrequested_variant(c, source_text)
+            ]
+            if regular_candidates:
+                candidates = regular_candidates
+            elif candidates:
+                return (
+                    query_title,
+                    "None",
+                    "TMDb候选疑似外传或衍生剧，需手动确认",
+                    {},
+                )
+
+        if len(candidates) == 1 and (
+            not source_name.startswith("TMDb") or rank_pick_allowed
+        ):
             return candidate_to_result(candidates[0], f"{source_name}命中")
 
         # 年份预排序：将年份匹配的候选提前，减少同名不同年作品的误匹配
@@ -1882,6 +1981,16 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                     _exact = _top_c
             if _exact is not None:
                 return candidate_to_result(_exact, f"标题匹配/{source_name}命中")
+
+        if source_name.startswith("TMDb"):
+            strong_direct_hit, direct_query = self._pick_strong_tmdb_direct_hit(
+                [query_title, recognized_title], year, candidates
+            )
+            if strong_direct_hit is not None:
+                hit_msg = f"TMDb直达命中"
+                if direct_query and normalize_compare_text(direct_query) != normalize_compare_text(query_title):
+                    hit_msg += f" ({direct_query})"
+                return candidate_to_result(strong_direct_hit, hit_msg)
 
         ranked_candidates, emb_pick, emb_msg = self._rerank_candidates_with_embedding(
             item, query_title, year, is_tv, source_name, candidates
@@ -1966,6 +2075,11 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                     seen_ids.add(cid)
                     found.append(cand)
 
+                if (
+                    mode == "siliconflow_tmdb"
+                    and self._pick_strong_tmdb_direct_hit([q], year, cur)[0] is not None
+                ):
+                    break
                 if len(found) >= limit:
                     break
             return found
@@ -2019,6 +2133,16 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 msg_hit += " (备选标题)"
             if bgm_fallback and tid_hit != "None":
                 meta_hit["_provider"] = "bgm"
+                if self.tmdb_api_key.get().strip():
+                    tmdb_candidates = fetch_tmdb_candidates(
+                        t_hit or used_query, year, is_tv, self.tmdb_api_key.get()
+                    )
+                    if tmdb_candidates:
+                        tmdb_meta = tmdb_candidates[0].get("meta") or {}
+                        if tmdb_meta.get("poster"):
+                            meta_hit["poster"] = tmdb_meta["poster"]
+                        if tmdb_meta.get("fanart"):
+                            meta_hit["fanart"] = tmdb_meta["fanart"]
             return t_hit, tid_hit, msg_hit, meta_hit
 
         return query_title, "None", f"{source_name}无结果", {}
@@ -2197,3 +2321,4 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = MediaRenamerGUI(root)
     root.mainloop()
+

@@ -84,6 +84,52 @@ EXTRA_TITLE_MARKER_RE = re.compile(
 )
 EPISODE_NOISE_NUMBERS = {2160, 1080, 720, 480, 265, 264}
 
+# Override noisy / mojibake-prone constants with clean runtime values.
+INVALID_QUERY_TITLES = {
+    "unknown",
+    "none",
+    "null",
+    "untitled",
+    "na",
+    "nan",
+    "未知",
+    "test",
+    "tests",
+    "sample",
+    "samples",
+    "tmp",
+    "temp",
+    "newfolder",
+    "新建文件夹",
+    "电视剧",
+    "电视剧集",
+    "电影",
+    "动漫",
+    "动画",
+}
+INVALID_QUERY_TITLES_NORMALIZED = {
+    re.sub(r"[\W_]+", "", text.lower(), flags=re.UNICODE)
+    for text in INVALID_QUERY_TITLES
+    if text
+}
+GENERIC_SEASON_TITLE_RE = re.compile(
+    r"(?i)^(?:season\s*\d{1,2}|s\s*\d{1,2}|第\s*\d{1,2}\s*季)$"
+)
+QUERY_SEASON_EP_RE = re.compile(
+    r"(?ix)\b(?:S\d{1,2}E\d{1,4}|Season\s*\d{1,2}|S\d{1,2}|Episode\s*\d{1,4}|EP?\s*\d{1,4})\b"
+)
+VARIANT_TITLE_MARKERS = {
+    "diary": re.compile(r"(?i)(?:diar(?:y|ies)|nikki|日记|日志|日誌)"),
+    "spinoff": re.compile(r"(?i)(?:spin[-_. ]?off|外传|外傳|番外)"),
+}
+MEDIA_NOISE_TOKEN_RE = re.compile(
+    r"""(?ix)^(
+        NF|NETFLIX|AMZN|AMAZON|DSNP|DISNEY|TVING|WEB|WEBDL|WEBRIP|BLURAY|BDRIP|BDREMUX|REMUX|UHD
+        |X264|X265|H264|H265|HEVC|AV1|HDR|HDR10|DV
+        |AAC\d*|DDP\d*|DD\d*|DTS(?:HD)?\d*|TRUEHD\d*|ATMOS
+    )$"""
+)
+
 ERROR_CODE_TIMEOUT = "TIMEOUT"
 ERROR_CODE_CONFIG = "CONFIG"
 ERROR_CODE_HTTP = "HTTP"
@@ -552,6 +598,403 @@ def build_db_query_plan(item, query_title, ai_data, g):
     database with the AI title alone to avoid noisy filename tokens polluting
     TMDb/BGM candidates.
     """
+    if isinstance(item, dict):
+        raw_name = item.get("old_name", "")
+    else:
+        raw_name = getattr(item, "old_name", "") or ""
+
+    _known_exts = set(
+        e.strip().lower()
+        for e in (DEFAULT_VIDEO_EXTS + "," + DEFAULT_SUB_AUDIO_EXTS).split(",")
+        if e.strip()
+    )
+    pure = raw_name
+    for _ in range(3):
+        base, ext = os.path.splitext(pure)
+        if ext.lower() in _known_exts:
+            pure = base
+        else:
+            break
+
+    query_titles = build_query_titles(item, query_title, ai_data, g)
+    if not query_titles:
+        return []
+
+    ai_title = clean_search_title(
+        (ai_data or {}).get("title") if isinstance(ai_data, dict) else ""
+    )
+    guess_title = clean_search_title((g.get("title") if g else None) or "")
+    derived_title = derive_title_from_filename(pure)
+
+    if ai_title and (
+        not is_meaningful_query_title(guess_title)
+        or normalize_compare_text(guess_title) != normalize_compare_text(ai_title)
+    ):
+        if is_meaningful_query_title(guess_title) and (
+            normalize_compare_text(guess_title) != normalize_compare_text(ai_title)
+        ):
+            return [[ai_title], [guess_title]]
+        return [[ai_title]]
+
+    if (
+        derived_title
+        and LEADING_RELEASE_GROUP_RE.match(pure)
+        and normalize_compare_text(clean_search_title(pure))
+        != normalize_compare_text(derived_title)
+    ):
+        return [[derived_title]]
+
+    if (
+        derived_title
+        and GROUP_RELEASE_BRACKET_RE.match(pure)
+        and (
+            not is_meaningful_query_title(guess_title)
+            or normalize_compare_text(guess_title)
+            != normalize_compare_text(derived_title)
+        )
+    ):
+        return [[derived_title]]
+
+    return [query_titles]
+
+
+def parse_error_message(message):
+    text = str(message or "").strip()
+    if not text:
+        return "", ""
+
+    if ":" in text:
+        code, detail = text.split(":", 1)
+        code = code.strip().upper()
+        if code in ERROR_CODES:
+            return code, detail.strip()
+
+    if "超时" in text:
+        return ERROR_CODE_TIMEOUT, text
+    if "未配置" in text:
+        return ERROR_CODE_CONFIG, text
+    if "HTTP" in text:
+        return ERROR_CODE_HTTP, text
+    if "解析失败" in text or "JSON" in text:
+        return ERROR_CODE_PARSE, text
+    if "无结果" in text or "未匹配" in text:
+        return ERROR_CODE_NO_RESULT, text
+    if "无效" in text:
+        return ERROR_CODE_INVALID, text
+    return ERROR_CODE_UNKNOWN, text
+
+
+def format_candidate_label(candidate):
+    title = candidate.get("title") or "未知"
+    alt_title = candidate.get("alt_title") or ""
+    if alt_title and normalize_compare_text(alt_title) == normalize_compare_text(title):
+        alt_title = ""
+    year = extract_year_from_release(candidate.get("release")) or "-"
+    rating = candidate.get("rating")
+    try:
+        rating_text = (
+            f"{float(rating):.1f}" if rating not in (None, "", 0, "0") else "-"
+        )
+    except Exception:
+        rating_text = "-"
+    parts = [title]
+    if alt_title:
+        parts.append(f"原名:{alt_title}")
+    parts.append(f"年份:{year}")
+    parts.append(f"评分:{rating_text}")
+    parts.append(f"ID:{candidate.get('id', '-')}")
+    source = candidate.get("msg")
+    if source:
+        parts.append(str(source))
+    return " | ".join(parts)
+
+
+def clean_search_title(title):
+    if not title:
+        return ""
+    text = re.sub(r"[\[\]\(\)（）]", " ", title)
+    text = re.sub(r"(?<![a-z0-9])[A-Z0-9]{2,}(?:-[A-Z0-9]{2,})+(?![a-z0-9])", " ", text)
+    text = LANG_TAG_COMBO_RE.sub(" ", text)
+    text = re.sub(
+        r"(?i)(?:10bit|FLAC|AAC|AVC|H\.?264|H\.?265|BluRay|1080p|2160p|720p|4K|\d{2,3}\s*FPS|SRTx?\d*|x264|x265|HEVC|Remastered|D3D-Raw|BDRip|Web-DL|Baha|NC\.Ver|完结合集|第\s*\d+\s*季|第\s*\d+\s*[集话話]|S\d{1,2}E\d{1,4}|EP?\s*\d{1,4})",
+        "",
+        text,
+    )
+    text = LANG_TAG_TOKEN_RE.sub(" ", text)
+    text = re.sub(r"^[\W_]+|[\W_]+$", "", text, flags=re.UNICODE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _normalize_query_token(token):
+    return re.sub(r"[\W_]+", "", str(token or "").strip())
+
+
+def _query_token_is_noise(token):
+    raw = str(token or "").strip()
+    if not raw:
+        return True
+    compact = _normalize_query_token(raw)
+    if not compact:
+        return True
+    if BRACKET_NOISE_RE.match(raw) or BRACKET_NOISE_RE.match(compact):
+        return True
+    if MEDIA_NOISE_TOKEN_RE.match(compact.upper()):
+        return True
+    if QUERY_SEASON_EP_RE.fullmatch(raw):
+        return True
+    if LANG_TAG_TOKEN_RE.fullmatch(raw):
+        return True
+    if compact.isdigit() and 1900 <= int(compact) <= 2099:
+        return True
+    return False
+
+
+def _looks_like_trailing_release_group_token(token):
+    raw = str(token or "").strip()
+    if not raw:
+        return False
+    compact = _normalize_query_token(raw)
+    if len(compact) < 3 or len(compact) > 24:
+        return False
+    if BRACKET_NOISE_RE.match(raw) or BRACKET_NOISE_RE.match(compact):
+        return True
+    if compact.isupper():
+        return True
+    suffixes = ("TV", "RAW", "RAWS", "SUB", "FANSUB", "STUDIO")
+    upper_compact = compact.upper()
+    for suffix in suffixes:
+        if upper_compact.endswith(suffix):
+            prefix = compact[: -len(suffix)]
+            if len(prefix) >= 2 and not prefix.islower():
+                return True
+    if re.search(r"[a-z]", raw) and re.search(r"[A-Z]{2,}", raw):
+        return True
+    return False
+
+
+def normalize_search_query_title(title):
+    """Normalize search titles by stripping season/episode and release noise."""
+    text = clean_search_title(title)
+    if not text:
+        return ""
+
+    text = re.sub(r"[._]+", " ", text)
+    text = QUERY_SEASON_EP_RE.sub(" ", text)
+    tokens = [tok for tok in re.split(r"\s+", text) if tok]
+    filtered = []
+    for idx, token in enumerate(tokens):
+        if _query_token_is_noise(token):
+            continue
+        if (
+            len(tokens) >= 2
+            and idx == len(tokens) - 1
+            and _looks_like_trailing_release_group_token(token)
+        ):
+            continue
+        filtered.append(token)
+
+    normalized = clean_search_title(" ".join(filtered))
+    if normalized and is_meaningful_query_title(normalized):
+        return normalized
+    return clean_search_title(text)
+
+
+def build_fallback_token_queries(title, min_length=4):
+    """Build safe fallback token queries from a normalized title."""
+    text = normalize_search_query_title(title)
+    latin_word_tokens = [
+        tok for tok in re.split(r"\s+", text) if re.search(r"[A-Za-z]", tok)
+    ]
+    has_cjk = bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff]", text))
+    if not has_cjk and len(latin_word_tokens) >= 2:
+        return []
+    seen = set()
+    queries = []
+    for raw in re.split(r"\s+", text):
+        token = clean_search_title(raw)
+        compact = normalize_compare_text(token)
+        if not token or len(compact) < min_length:
+            continue
+        if _query_token_is_noise(token):
+            continue
+        if compact in seen:
+            continue
+        seen.add(compact)
+        queries.append(token)
+    return queries
+
+
+def derive_title_from_filename(pure_name):
+    text = str(pure_name or "")
+    leading_group_title = extract_title_after_leading_release_group(text)
+    if leading_group_title:
+        return leading_group_title
+    bracket_title = extract_bracket_title_from_filename(text)
+    if bracket_title:
+        return bracket_title
+    text = text.replace("_", " ").replace(".", " ")
+    text = re.sub(r"(?i)\bS\d{1,2}E\d{1,4}\b.*$", "", text)
+    text = re.sub(r"(?i)\bEP?\s*\d{1,4}\b.*$", "", text)
+    text = re.sub(r"(?i)第\s*\d{1,4}\s*[集话話].*$", "", text)
+    text = re.sub(r"(?i)[\[\(（]\s*\d{1,4}(?:v\d+)?\s*[\]\)）]\s*$", "", text)
+    return clean_search_title(text)
+
+
+def title_variant_markers(text):
+    raw = str(text or "")
+    return {
+        name
+        for name, pattern in VARIANT_TITLE_MARKERS.items()
+        if pattern.search(raw)
+    }
+
+
+def candidate_looks_like_extra_title(candidate):
+    meta = (candidate or {}).get("meta") or {}
+    fields = [
+        (candidate or {}).get("title") or "",
+        (candidate or {}).get("alt_title") or "",
+        meta.get("original_title") or "",
+    ]
+    return text_mentions_extra_title(" ".join(str(v) for v in fields if v))
+
+
+def candidate_looks_like_unrequested_variant(candidate, source_text):
+    meta = (candidate or {}).get("meta") or {}
+    fields = [
+        (candidate or {}).get("title") or "",
+        (candidate or {}).get("alt_title") or "",
+        meta.get("original_title") or "",
+    ]
+    candidate_markers = title_variant_markers(" ".join(str(v) for v in fields if v))
+    if not candidate_markers:
+        return False
+    source_markers = title_variant_markers(source_text)
+    return not candidate_markers.issubset(source_markers)
+
+
+def split_mixed_title(title):
+    """Split mixed Chinese-English title into separate queries."""
+    if not title or not isinstance(title, str):
+        return []
+
+    text = title.strip()
+    has_chinese = bool(re.search(r"[\u4e00-\u9fff]", text))
+    has_latin = bool(re.search(r"[a-zA-Z]", text))
+    if not (has_chinese and has_latin):
+        return []
+
+    parts = re.split(r"[\s\.\-_]+", text)
+    chinese_parts = []
+    latin_parts = []
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if re.search(r"[\u4e00-\u9fff]", part):
+            chinese_parts.append(part)
+        elif re.search(r"[a-zA-Z]", part):
+            latin_parts.append(part)
+
+    results = []
+    if latin_parts:
+        results.append(" ".join(latin_parts))
+    if chinese_parts:
+        results.append("".join(chinese_parts))
+    return results
+
+
+def build_query_titles(item, query_title, ai_data, g):
+    if isinstance(item, dict):
+        raw_name = item.get("old_name", "")
+        item_dir = item.get("dir", "") or ""
+    else:
+        raw_name = getattr(item, "old_name", "") or ""
+        item_dir = getattr(item, "dir", "") or ""
+
+    _known_exts = set(
+        e.strip().lower()
+        for e in (DEFAULT_VIDEO_EXTS + "," + DEFAULT_SUB_AUDIO_EXTS).split(",")
+        if e.strip()
+    )
+    pure = raw_name
+    for _ in range(3):
+        base, ext = os.path.splitext(pure)
+        if ext.lower() in _known_exts:
+            pure = base
+        else:
+            break
+
+    dir_title = os.path.basename(item_dir)
+    guess_title = clean_search_title((g.get("title") if g else None) or "")
+
+    show_dir_title = ""
+    if GENERIC_SEASON_TITLE_RE.match(dir_title.strip()):
+        parent_dir = os.path.dirname(item_dir)
+        if parent_dir:
+            show_dir_title = clean_search_title(os.path.basename(parent_dir))
+
+    candidates = [
+        query_title,
+        (ai_data or {}).get("title") if isinstance(ai_data, dict) else None,
+        guess_title,
+        extract_title_after_leading_release_group(pure),
+        extract_bracket_title_from_filename(pure),
+        derive_title_from_filename(pure),
+        show_dir_title,
+        clean_search_title(dir_title),
+        clean_search_title(pure),
+    ]
+
+    for candidate in list(candidates):
+        if candidate:
+            candidates.extend(split_mixed_title(candidate))
+
+    expanded_candidates = []
+    for candidate in candidates:
+        raw_clean = clean_search_title(candidate)
+        normalized = normalize_search_query_title(candidate)
+        raw_norm = normalize_compare_text(raw_clean)
+        normalized_norm = normalize_compare_text(normalized)
+        preserve_raw_alias = (
+            raw_clean
+            and normalized
+            and raw_norm
+            and normalized_norm
+            and raw_norm != normalized_norm
+            and bool(re.search(r"[._/]", raw_clean))
+            and len(raw_norm) <= len(normalized_norm) + 4
+        )
+        if raw_clean and preserve_raw_alias:
+            expanded_candidates.append(raw_clean)
+        if normalized:
+            expanded_candidates.append(normalized)
+
+    ordered = unique_keep_order(expanded_candidates)
+    strong_norms = [
+        normalize_compare_text(text)
+        for text in ordered
+        if len(str(text or "").split()) >= 2 or len(normalize_compare_text(text)) >= 8
+    ]
+    filtered = []
+    for text in ordered:
+        if not is_meaningful_query_title(text):
+            continue
+        norm = normalize_compare_text(text)
+        if (
+            len(str(text or "").split()) == 1
+            and len(norm) < 8
+            and any(norm != strong and norm in strong for strong in strong_norms)
+        ):
+            continue
+        filtered.append(text)
+    return filtered
+
+
+def build_db_query_plan(item, query_title, ai_data, g):
+    """Build staged DB query titles."""
     if isinstance(item, dict):
         raw_name = item.get("old_name", "")
     else:

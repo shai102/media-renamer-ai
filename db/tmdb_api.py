@@ -7,6 +7,7 @@ import difflib
 import requests
 
 from utils.helpers import (
+    build_fallback_token_queries,
     ERROR_CODE_CONFIG,
     ERROR_CODE_HTTP,
     ERROR_CODE_INVALID,
@@ -20,7 +21,9 @@ from utils.helpers import (
     clean_search_title,
     format_error_message,
     get_cache_key,
+    normalize_search_query_title,
     session,
+    text_mentions_extra_title,
     TIMEOUT_DB_DETAIL,
     TIMEOUT_DB_SEARCH,
 )
@@ -36,6 +39,32 @@ _tmdb_tokens = 8.0          # 初始令牌数（允许冷启动时短暂突发�
 _tmdb_max_tokens = 8.0
 _tmdb_refill_rate = 4.0     # 每秒补充令牌数（对应 TMDB 4 req/s 限制）
 _tmdb_last_refill = time.monotonic()
+
+# ---------------------------------------------------------------------------
+# BGM API 全局限速器（bgm.tv 建议不超过 5 req/s）
+# ---------------------------------------------------------------------------
+_bgm_lock = threading.Lock()
+_bgm_tokens = 5.0
+_bgm_max_tokens = 5.0
+_bgm_refill_rate = 5.0      # 每秒补充令牌数
+_bgm_last_refill = time.monotonic()
+
+
+def _bgm_throttle():
+    """消耗一个 BGM 令牌；令牌耗尽时阻塞直到补充。"""
+    global _bgm_tokens, _bgm_last_refill
+    while True:
+        with _bgm_lock:
+            now = time.monotonic()
+            _bgm_tokens = min(
+                _bgm_max_tokens,
+                _bgm_tokens + (now - _bgm_last_refill) * _bgm_refill_rate,
+            )
+            _bgm_last_refill = now
+            if _bgm_tokens >= 1.0:
+                _bgm_tokens -= 1.0
+                return
+        time.sleep(0.15)
 
 
 def _tmdb_throttle():
@@ -143,6 +172,7 @@ def fetch_bgm_by_id(subject_id, api_key=""):
 
 
 def fetch_bgm_candidates_raw(title, year=None, api_key=""):
+    title = normalize_search_query_title(title)
     q = clean_search_title(title)
     q_norm = re.sub(r"[\W_]+", "", str(q).lower())
     headers = {"User-Agent": USER_AGENT}
@@ -192,6 +222,7 @@ def fetch_bgm_candidates_raw(title, year=None, api_key=""):
         return max(scores) if scores else 0.0
 
     def _request_bgm(query):
+        _bgm_throttle()
         resp = session.get(
             f"https://api.bgm.tv/search/subject/{query}?type=2",
             headers=headers,
@@ -220,11 +251,10 @@ def fetch_bgm_candidates_raw(title, year=None, api_key=""):
                 return candidates
 
         # Fuzzy fallback: 拆词后重排
-        token_queries = []
-        for token in re.split(r"\s+", q):
-            t = token.strip()
-            if len(t) >= 2 and t.lower() != q.lower() and t not in token_queries:
-                token_queries.append(t)
+        token_queries = [
+            t for t in build_fallback_token_queries(q, min_length=2)
+            if t.lower() != q.lower()
+        ]
 
         fuzzy_pool = []
         seen = set()
@@ -261,6 +291,7 @@ def fetch_bgm_candidates_raw(title, year=None, api_key=""):
 
 
 def fetch_bgm_candidates(title, year=None, api_key=""):
+    title = normalize_search_query_title(title)
     return cached_request(
         fetch_bgm_candidates_raw,
         get_cache_key("bgm_candidates_v2", f"{title}_{year}"),
@@ -419,7 +450,7 @@ def fetch_tmdb_by_id(tmdb_id, is_tv=True, api_key=""):
     )
 
 
-def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
+def _legacy_fetch_tmdb_candidates_raw_v1(title, year=None, is_tv=True, api_key=""):
     if not api_key or not api_key.strip():
         return []
 
@@ -427,10 +458,10 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
     stype = "tv" if is_tv else "movie"
     q_norm = re.sub(r"[\W_]+", "", str(q).lower())
 
-    def _items_to_candidates(items):
+    def _items_to_candidates(items, search_query=""):
         candidates = []
         seen_ids = set()
-        for item in items[:8]:
+        for rank, item in enumerate(items[:8], 1):
             cid = str(item.get("id") or "")
             if not cid or cid in seen_ids:
                 continue
@@ -441,10 +472,13 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
             meta = {
                 "overview": item.get("overview", ""),
                 "rating": rating,
+                "popularity": item.get("popularity", 0),
                 "poster": item.get("poster_path", ""),
                 "fanart": item.get("backdrop_path", ""),
                 "release": release,
                 "original_title": item.get("original_name") or item.get("original_title") or "",
+                "search_query": search_query,
+                "search_rank": rank,
             }
             candidates.append(
                 {
@@ -461,8 +495,69 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
             )
         return candidates
 
-    def _request_once(query, year_mode=None):
-        params = {"api_key": api_key.strip(), "query": query, "language": "zh-CN"}
+    def _is_latin_query(query):
+        text = str(query or "")
+        return bool(re.search(r"[A-Za-z]", text)) and not bool(re.search(r"[\u4e00-\u9fff]", text))
+
+    def _item_extra(item):
+        fields = [
+            item.get("name") or item.get("title") or "",
+            item.get("original_name") or item.get("original_title") or "",
+        ]
+        return text_mentions_extra_title(" ".join(str(v) for v in fields if v))
+
+    def _rank_results(result_sets, query):
+        query_extra = text_mentions_extra_title(query)
+        query_norm = re.sub(r"[\W_]+", "", str(query).lower())
+        merged = {}
+        merged_set_idx = {}  # 记录每个 ID 当前采用的数据来自第几批（0=zh-CN，1=en-US）
+        order = 0
+        for set_idx, results in enumerate(result_sets):
+            for item in results or []:
+                order += 1
+                cid = str(item.get("id") or "")
+                if not cid:
+                    continue
+                score = _similarity_score(item, query_norm)
+                name = item.get("name") or item.get("title") or ""
+                orig = item.get("original_name") or item.get("original_title") or ""
+                name_norm = re.sub(r"[\W_]+", "", str(name).lower())
+                orig_norm = re.sub(r"[\W_]+", "", str(orig).lower())
+                exact = bool(query_norm and (name_norm == query_norm or orig_norm == query_norm))
+                extra_penalty = 1 if (not query_extra and _item_extra(item)) else 0
+                priority = (
+                    extra_penalty,
+                    0 if exact else 1,
+                    -score,
+                    -float(item.get("popularity") or 0),
+                    order,
+                )
+                previous = merged.get(cid)
+                if previous is None:
+                    # 首次见到该 ID
+                    merged[cid] = (priority, item)
+                    merged_set_idx[cid] = set_idx
+                elif set_idx < merged_set_idx[cid]:
+                    # 当前批次编号更小（更靠前，即 zh-CN），优先使用其 item 数据
+                    # 但取两者中更优的 priority，保证排名位置尽可能靠前
+                    best_priority = min(priority, previous[0])
+                    merged[cid] = (best_priority, item)
+                    merged_set_idx[cid] = set_idx
+                elif set_idx == merged_set_idx[cid] and priority < previous[0]:
+                    # 同批次内更优的排名
+                    merged[cid] = (priority, item)
+                elif set_idx > merged_set_idx[cid] and priority < previous[0]:
+                    # 来自更晚批次（en-US），不替换 item（保留 zh-CN 的标题数据），
+                    # 但将更优的 priority 继承，确保该 ID 在候选列表中排名正确
+                    merged[cid] = (priority, previous[1])
+        return [item for _, item in sorted(merged.values(), key=lambda pair: pair[0])]
+
+    def _request_once(query, year_mode=None, language="zh-CN"):
+        params = {
+            "api_key": api_key.strip(),
+            "query": query,
+            "language": language,
+        }
         if year:
             if year_mode == "year":
                 params["year"] = year
@@ -476,16 +571,17 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
         response.raise_for_status()
         return response.json().get("results", [])
 
-    def _similarity_score(item):
+    def _similarity_score(item, query_norm=None):
+        compare_norm = query_norm or q_norm
         name = item.get("name") or item.get("title") or ""
         orig = item.get("original_name") or item.get("original_title") or ""
         name_norm = re.sub(r"[\W_]+", "", str(name).lower())
         orig_norm = re.sub(r"[\W_]+", "", str(orig).lower())
         scores = []
         if name_norm:
-            scores.append(difflib.SequenceMatcher(None, q_norm, name_norm).ratio())
+            scores.append(difflib.SequenceMatcher(None, compare_norm, name_norm).ratio())
         if orig_norm:
-            scores.append(difflib.SequenceMatcher(None, q_norm, orig_norm).ratio())
+            scores.append(difflib.SequenceMatcher(None, compare_norm, orig_norm).ratio())
         return max(scores) if scores else 0.0
 
     try:
@@ -501,9 +597,12 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
 
         for query in queries:
             for year_mode in search_plan:
-                results = _request_once(query, year_mode)
+                result_sets = [_request_once(query, year_mode, "zh-CN")]
+                if _is_latin_query(query):
+                    result_sets.append(_request_once(query, year_mode, "en-US"))
+                results = _rank_results(result_sets, query)
                 if results:
-                    return _items_to_candidates(results)
+                    return _items_to_candidates(results, query)
 
         # Fuzzy fallback: retry with split tokens and rerank by lexical similarity.
         token_queries = []
@@ -526,8 +625,8 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
             ranked = sorted(fuzzy_pool, key=_similarity_score, reverse=True)
             top = [it for it in ranked if _similarity_score(it) >= 0.35]
             if top:
-                return _items_to_candidates(top)
-            return _items_to_candidates(ranked)
+                return _items_to_candidates(top, " / ".join(token_queries))
+            return _items_to_candidates(ranked, " / ".join(token_queries))
         return []
     except requests.exceptions.Timeout:
         return []
@@ -546,10 +645,11 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
         return []
 
 
-def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
+def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
     if not api_key or not api_key.strip():
         return []
 
+    title = normalize_search_query_title(title)
     q = clean_search_title(title)
     stype = "tv" if is_tv else "movie"
     raw_query = str(title or "").strip()
@@ -588,7 +688,7 @@ def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
                     or item.get("original_title")
                     or "",
                     "id": cid,
-                    "msg": f"TMDb{'鍓ч泦' if is_tv else '鐢靛奖'}候选",
+                    "msg": f"TMDb{'剧集' if is_tv else '电影'}候选",
                     "rating": rating,
                     "release": release,
                     "meta": meta,
@@ -602,8 +702,19 @@ def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
             re.search(r"[\u4e00-\u9fff]", text)
         )
 
+    def _item_extra(item):
+        fields = [
+            item.get("name") or item.get("title") or "",
+            item.get("original_name") or item.get("original_title") or "",
+        ]
+        return text_mentions_extra_title(" ".join(str(v) for v in fields if v))
+
     def _request_once(query, year_mode=None, language="zh-CN"):
-        params = {"api_key": api_key.strip(), "query": query, "language": language}
+        params = {
+            "api_key": api_key.strip(),
+            "query": query,
+            "language": language,
+        }
         if year:
             if year_mode == "year":
                 params["year"] = year
@@ -644,31 +755,44 @@ def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
         return max(scores) if scores else 0.0
 
     def _rank_results(result_sets, query):
+        query_extra = text_mentions_extra_title(query)
         query_norm = _norm(query)
         merged = {}
+        merged_set_idx = {}
         order = 0
-        for results in result_sets:
+        for set_idx, results in enumerate(result_sets):
             for item in results or []:
                 order += 1
                 cid = str(item.get("id") or "")
                 if not cid:
                     continue
-                priority = (
-                    0
-                    if query_norm
+                exact = bool(
+                    query_norm
                     and (
                         _norm(item.get("name") or item.get("title") or "") == query_norm
                         or _norm(item.get("original_name") or item.get("original_title") or "")
                         == query_norm
                     )
-                    else 1,
+                )
+                extra_penalty = 1 if (not query_extra and _item_extra(item)) else 0
+                priority = (
+                    extra_penalty,
+                    0 if exact else 1,
                     -_similarity_score(item, query_norm),
                     -float(item.get("popularity") or 0),
                     order,
                 )
                 previous = merged.get(cid)
-                if previous is None or priority < previous[0]:
+                if previous is None:
                     merged[cid] = (priority, item)
+                    merged_set_idx[cid] = set_idx
+                elif set_idx < merged_set_idx[cid]:
+                    merged[cid] = (min(priority, previous[0]), item)
+                    merged_set_idx[cid] = set_idx
+                elif set_idx == merged_set_idx[cid] and priority < previous[0]:
+                    merged[cid] = (priority, item)
+                elif set_idx > merged_set_idx[cid] and priority < previous[0]:
+                    merged[cid] = (priority, previous[1])
         return [item for _, item in sorted(merged.values(), key=lambda pair: pair[0])]
 
     def _request_ranked(query, year_mode=None):
@@ -679,7 +803,7 @@ def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
 
     def _quality(items, query):
         if not items:
-            return (-1.0, -1.0, -1.0)
+            return (-1.0, -1.0, -1.0, -1.0)
         query_norm = _norm(query)
         top = items[0]
         exact = 1.0 if query_norm and (
@@ -687,9 +811,10 @@ def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
             or _norm(top.get("original_name") or top.get("original_title") or "")
             == query_norm
         ) else 0.0
+        extra_penalty = 0.0 if text_mentions_extra_title(query) or not _item_extra(top) else -1.0
         top_score = _similarity_score(top, query_norm)
         popularity = float(top.get("popularity") or 0.0)
-        return (exact, top_score, popularity)
+        return (exact, extra_penalty, top_score, popularity)
 
     def _keyword_query_variants(keyword_name):
         variants = []
@@ -745,7 +870,7 @@ def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
         if q_retry and q_retry != q:
             queries.append(q_retry)
 
-        best_quality = (-1.0, -1.0, -1.0)
+        best_quality = (-1.0, -1.0, -1.0, -1.0)
         best_candidates = []
 
         for query in queries:
@@ -757,14 +882,13 @@ def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
                 if quality > best_quality:
                     best_quality = quality
                     best_candidates = _items_to_candidates(results, query)
-                if quality[0] >= 1.0 or quality[1] >= 0.72:
+                if quality[0] >= 1.0 or quality[2] >= 0.72:
                     return _items_to_candidates(results, query)
 
-        token_queries = []
-        for token in re.split(r"\s+", q):
-            t = token.strip()
-            if len(t) >= 4 and t.lower() != q.lower() and t not in token_queries:
-                token_queries.append(t)
+        token_queries = [
+            t for t in build_fallback_token_queries(q, min_length=4)
+            if t.lower() != q.lower()
+        ]
 
         token_candidates = []
         fuzzy_pool = []
@@ -798,7 +922,7 @@ def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
                 if quality > best_quality:
                     best_quality = quality
                     best_candidates = _items_to_candidates(results, keyword_query)
-                if quality[0] >= 1.0 or quality[1] >= 0.72:
+                if quality[0] >= 1.0 or quality[2] >= 0.72:
                     return _items_to_candidates(results, keyword_query)
 
         return best_candidates or token_candidates
@@ -807,19 +931,20 @@ def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
     except requests.exceptions.HTTPError as err:
         snippet = _response_body_snippet(getattr(err, "response", None))
         if snippet:
-            logging.warning(f"TMDb鎼滅储HTTP澶辫触锛岃繑鍥炲唴瀹? {snippet}")
+            logging.warning(f"TMDb搜索HTTP失败，返回内容: {snippet}")
         return []
     except ValueError:
         snippet = _response_body_snippet(locals().get("response"))
         if snippet:
-            logging.warning(f"TMDb鎼滅储瑙ｆ瀽澶辫触锛岃繑鍥炲唴瀹? {snippet}")
+            logging.warning(f"TMDb搜索解析失败，返回内容: {snippet}")
         return []
     except Exception as err:
-        logging.error(f"TMDb鎼滅储澶辫触: {err}")
+        logging.error(f"TMDb搜索失败: {err}")
         return []
 
 
 def fetch_tmdb_candidates(title, year=None, is_tv=True, api_key=""):
+    title = normalize_search_query_title(title)
     return cached_request(
         fetch_tmdb_candidates_raw,
         get_cache_key("tmdb_candidates_v6", f"{title}_{year}_{is_tv}"),
@@ -906,13 +1031,14 @@ def fetch_tmdb_episode_meta_raw(
 
         is_placeholder_name = _is_placeholder(name)
 
+        # 仅当 TMDB 也没有 plot 时才用 BGM 补集标题，
+        # 避免同名不同年作品（如 1992/2023 幽游白书）通过 BGM 搜索互相污染集标题。
         if (
-            not plot or not str(plot).strip() or not name or is_placeholder_name
+            not str(plot or "").strip()
+            and (not name or is_placeholder_name)
         ) and series_title:
             try:
-                bgm_candidates = fetch_bgm_candidates(
-                    series_title, api_key=api_key_bgm
-                )
+                bgm_candidates = fetch_bgm_candidates(series_title, api_key_bgm)
                 if bgm_candidates:
                     bgm_subject_id = str(bgm_candidates[0].get("id", ""))
                     if bgm_subject_id:
@@ -976,6 +1102,35 @@ def fetch_tmdb_season_poster(tv_id, season, api_key):
     return cached_request(
         fetch_tmdb_season_poster_raw,
         get_cache_key("tmdb_season_poster", f"{tv_id}_{season}"),
+        tv_id,
+        season,
+        api_key,
+    )
+
+
+def fetch_tmdb_season_episode_count_raw(tv_id, season, api_key):
+    """获取指定季的总集数。"""
+    if not tv_id or tv_id == "None" or not api_key.strip():
+        return 0
+    try:
+        response = _tmdb_get(
+            f"https://api.themoviedb.org/3/tv/{tv_id}/season/{season}",
+            params={"api_key": api_key.strip(), "language": "zh-CN"},
+            timeout=TIMEOUT_DB_DETAIL,
+        )
+        response.raise_for_status()
+        episodes = response.json().get("episodes")
+        if isinstance(episodes, list):
+            return len(episodes)
+        return 0
+    except Exception:
+        return 0
+
+
+def fetch_tmdb_season_episode_count(tv_id, season, api_key):
+    return cached_request(
+        fetch_tmdb_season_episode_count_raw,
+        get_cache_key("tmdb_season_ep_count", f"{tv_id}_{season}"),
         tv_id,
         season,
         api_key,
