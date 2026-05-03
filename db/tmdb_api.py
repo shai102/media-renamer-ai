@@ -546,10 +546,283 @@ def fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
         return []
 
 
+def _legacy_fetch_tmdb_candidates_raw(title, year=None, is_tv=True, api_key=""):
+    if not api_key or not api_key.strip():
+        return []
+
+    q = clean_search_title(title)
+    stype = "tv" if is_tv else "movie"
+    raw_query = str(title or "").strip()
+
+    def _norm(text):
+        return re.sub(r"[\W_]+", "", str(text or "").lower())
+
+    q_norm = _norm(q)
+
+    def _items_to_candidates(items, search_query=""):
+        candidates = []
+        seen_ids = set()
+        for rank, item in enumerate(items[:8], 1):
+            cid = str(item.get("id") or "")
+            if not cid or cid in seen_ids:
+                continue
+            seen_ids.add(cid)
+
+            release = item.get("first_air_date") or item.get("release_date") or ""
+            rating = item.get("vote_average", 0)
+            meta = {
+                "overview": item.get("overview", ""),
+                "rating": rating,
+                "popularity": item.get("popularity", 0),
+                "poster": item.get("poster_path", ""),
+                "fanart": item.get("backdrop_path", ""),
+                "release": release,
+                "original_title": item.get("original_name") or item.get("original_title") or "",
+                "search_query": search_query,
+                "search_rank": rank,
+            }
+            candidates.append(
+                {
+                    "title": item.get("name") or item.get("title") or title,
+                    "alt_title": item.get("original_name")
+                    or item.get("original_title")
+                    or "",
+                    "id": cid,
+                    "msg": f"TMDb{'鍓ч泦' if is_tv else '鐢靛奖'}候选",
+                    "rating": rating,
+                    "release": release,
+                    "meta": meta,
+                }
+            )
+        return candidates
+
+    def _is_latin_query(query):
+        text = str(query or "")
+        return bool(re.search(r"[A-Za-z]", text)) and not bool(
+            re.search(r"[\u4e00-\u9fff]", text)
+        )
+
+    def _request_once(query, year_mode=None, language="zh-CN"):
+        params = {"api_key": api_key.strip(), "query": query, "language": language}
+        if year:
+            if year_mode == "year":
+                params["year"] = year
+            elif year_mode == "first_air_date_year":
+                params["first_air_date_year"] = year
+        response = _tmdb_get(
+            f"https://api.themoviedb.org/3/search/{stype}",
+            params=params,
+            timeout=TIMEOUT_DB_SEARCH,
+        )
+        response.raise_for_status()
+        return response.json().get("results", [])
+
+    def _request_keywords(query):
+        response = _tmdb_get(
+            "https://api.themoviedb.org/3/search/keyword",
+            params={"api_key": api_key.strip(), "query": query},
+            timeout=TIMEOUT_DB_SEARCH,
+        )
+        response.raise_for_status()
+        return response.json().get("results", [])
+
+    def _similarity_score(item, query_norm=None):
+        compare_norm = query_norm or q_norm
+        name = item.get("name") or item.get("title") or ""
+        orig = item.get("original_name") or item.get("original_title") or ""
+        name_norm = _norm(name)
+        orig_norm = _norm(orig)
+        scores = []
+        if name_norm:
+            scores.append(
+                difflib.SequenceMatcher(None, compare_norm, name_norm).ratio()
+            )
+        if orig_norm:
+            scores.append(
+                difflib.SequenceMatcher(None, compare_norm, orig_norm).ratio()
+            )
+        return max(scores) if scores else 0.0
+
+    def _rank_results(result_sets, query):
+        query_norm = _norm(query)
+        merged = {}
+        order = 0
+        for results in result_sets:
+            for item in results or []:
+                order += 1
+                cid = str(item.get("id") or "")
+                if not cid:
+                    continue
+                priority = (
+                    0
+                    if query_norm
+                    and (
+                        _norm(item.get("name") or item.get("title") or "") == query_norm
+                        or _norm(item.get("original_name") or item.get("original_title") or "")
+                        == query_norm
+                    )
+                    else 1,
+                    -_similarity_score(item, query_norm),
+                    -float(item.get("popularity") or 0),
+                    order,
+                )
+                previous = merged.get(cid)
+                if previous is None or priority < previous[0]:
+                    merged[cid] = (priority, item)
+        return [item for _, item in sorted(merged.values(), key=lambda pair: pair[0])]
+
+    def _request_ranked(query, year_mode=None):
+        result_sets = [_request_once(query, year_mode, "zh-CN")]
+        if _is_latin_query(query):
+            result_sets.append(_request_once(query, year_mode, "en-US"))
+        return _rank_results(result_sets, query)
+
+    def _quality(items, query):
+        if not items:
+            return (-1.0, -1.0, -1.0)
+        query_norm = _norm(query)
+        top = items[0]
+        exact = 1.0 if query_norm and (
+            _norm(top.get("name") or top.get("title") or "") == query_norm
+            or _norm(top.get("original_name") or top.get("original_title") or "")
+            == query_norm
+        ) else 0.0
+        top_score = _similarity_score(top, query_norm)
+        popularity = float(top.get("popularity") or 0.0)
+        return (exact, top_score, popularity)
+
+    def _keyword_query_variants(keyword_name):
+        variants = []
+        text = str(keyword_name or "").strip()
+        if not text:
+            return variants
+        variants.append(text)
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9 '&:!+\\-]*", text):
+            title_case = " ".join(
+                part[:1].upper() + part[1:] if part else part
+                for part in text.split()
+            )
+            if title_case not in variants:
+                variants.append(title_case)
+        return variants
+
+    def _keyword_queries(base_query):
+        scored = []
+        seen = set()
+        for keyword in _request_keywords(base_query):
+            name = str(keyword.get("name") or "").strip()
+            key = _norm(name)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            score = difflib.SequenceMatcher(None, _norm(base_query), key).ratio()
+            scored.append((score, len(name), name))
+        scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+        queries = []
+        seen_queries = set()
+        for score, _length, name in scored[:5]:
+            if score < 0.45:
+                continue
+            for variant in _keyword_query_variants(name):
+                query_text = clean_search_title(variant) or variant.strip()
+                query_key = _norm(query_text)
+                if not query_key or query_key in seen_queries:
+                    continue
+                seen_queries.add(query_key)
+                queries.append(query_text)
+        return queries
+
+    try:
+        if is_tv:
+            search_plan = ["year", "first_air_date_year", None] if year else [None]
+        else:
+            search_plan = ["year", None] if year else [None]
+
+        queries = [q]
+        if raw_query and _norm(raw_query) != _norm(q):
+            queries.append(raw_query)
+        q_retry = re.sub(r"(?i)HD|閲嶅埗鐗坾閲嶈＝鐗坾Remaster|Edition", "", q).strip()
+        if q_retry and q_retry != q:
+            queries.append(q_retry)
+
+        best_quality = (-1.0, -1.0, -1.0)
+        best_candidates = []
+
+        for query in queries:
+            for year_mode in search_plan:
+                results = _request_ranked(query, year_mode)
+                if not results:
+                    continue
+                quality = _quality(results, query)
+                if quality > best_quality:
+                    best_quality = quality
+                    best_candidates = _items_to_candidates(results, query)
+                if quality[0] >= 1.0 or quality[1] >= 0.72:
+                    return _items_to_candidates(results, query)
+
+        token_queries = []
+        for token in re.split(r"\s+", q):
+            t = token.strip()
+            if len(t) >= 4 and t.lower() != q.lower() and t not in token_queries:
+                token_queries.append(t)
+
+        token_candidates = []
+        fuzzy_pool = []
+        seen = set()
+        for tq in token_queries:
+            for item in _request_ranked(tq, None):
+                cid = str(item.get("id") or "")
+                if not cid or cid in seen:
+                    continue
+                seen.add(cid)
+                fuzzy_pool.append(item)
+
+        if fuzzy_pool:
+            ranked = sorted(fuzzy_pool, key=_similarity_score, reverse=True)
+            top = [it for it in ranked if _similarity_score(it) >= 0.35]
+            chosen = top or ranked
+            token_candidates = _items_to_candidates(chosen, " / ".join(token_queries))
+
+        keyword_queries = []
+        for query in queries:
+            for keyword_query in _keyword_queries(query):
+                if all(_norm(keyword_query) != _norm(existing) for existing in keyword_queries):
+                    keyword_queries.append(keyword_query)
+
+        for keyword_query in keyword_queries:
+            for year_mode in search_plan:
+                results = _request_ranked(keyword_query, year_mode)
+                if not results:
+                    continue
+                quality = _quality(results, keyword_query)
+                if quality > best_quality:
+                    best_quality = quality
+                    best_candidates = _items_to_candidates(results, keyword_query)
+                if quality[0] >= 1.0 or quality[1] >= 0.72:
+                    return _items_to_candidates(results, keyword_query)
+
+        return best_candidates or token_candidates
+    except requests.exceptions.Timeout:
+        return []
+    except requests.exceptions.HTTPError as err:
+        snippet = _response_body_snippet(getattr(err, "response", None))
+        if snippet:
+            logging.warning(f"TMDb鎼滅储HTTP澶辫触锛岃繑鍥炲唴瀹? {snippet}")
+        return []
+    except ValueError:
+        snippet = _response_body_snippet(locals().get("response"))
+        if snippet:
+            logging.warning(f"TMDb鎼滅储瑙ｆ瀽澶辫触锛岃繑鍥炲唴瀹? {snippet}")
+        return []
+    except Exception as err:
+        logging.error(f"TMDb鎼滅储澶辫触: {err}")
+        return []
+
+
 def fetch_tmdb_candidates(title, year=None, is_tv=True, api_key=""):
     return cached_request(
         fetch_tmdb_candidates_raw,
-        get_cache_key("tmdb_candidates_v4", f"{title}_{year}_{is_tv}"),
+        get_cache_key("tmdb_candidates_v6", f"{title}_{year}_{is_tv}"),
         title,
         year,
         is_tv,
@@ -580,7 +853,7 @@ def fetch_tmdb_info_raw(title, year=None, is_tv=True, api_key=""):
 def fetch_tmdb_info(title, year=None, is_tv=True, api_key=""):
     return cached_request(
         fetch_tmdb_info_raw,
-        get_cache_key("tmdb_search_v3", f"{title}_{year}_{is_tv}"),
+        get_cache_key("tmdb_search_v4", f"{title}_{year}_{is_tv}"),
         title,
         year,
         is_tv,

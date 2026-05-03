@@ -283,17 +283,19 @@ def _normalize_ollama_parse_result(data):
     except (TypeError, ValueError):
         year = None
 
+    season_raw = data.get("season")
     try:
-        season = int(data.get("season") or 1)
+        season = int(season_raw) if season_raw not in (None, "") else 1
     except (TypeError, ValueError):
         season = 1
-    season = max(1, season)
+    season = max(0, season)
 
+    episode_raw = data.get("episode")
     try:
-        episode = int(data.get("episode") or 1)
+        episode = int(episode_raw) if episode_raw not in (None, "") else 1
     except (TypeError, ValueError):
         episode = 1
-    episode = max(1, episode)
+    episode = max(0, episode)
 
     return {
         "title": title,

@@ -43,6 +43,9 @@ _LANG_TAG_PART = "|".join(
 LANG_TAG_TOKEN_RE = re.compile(
     rf"(?i)(?:(?<=^)|(?<=[\s._\-\[\(]))(?:{_LANG_TAG_PART})(?:(?=$)|(?=[\s._\-\]\)]))"
 )
+LANG_TAG_COMBO_RE = re.compile(
+    rf"(?i)(?:(?<=^)|(?<=[\s._\-\[\(]))(?:{_LANG_TAG_PART})(?:\s*[&+]\s*(?:{_LANG_TAG_PART}))+(?:(?=$)|(?=[\s._\-\]\)]))"
+)
 INVALID_QUERY_TITLES = {
     "unknown",
     "none",
@@ -59,6 +62,26 @@ GENERIC_SEASON_TITLE_RE = re.compile(
 )
 
 VERSION_TAG_RE = re.compile(r"\[(NC\.Ver|SP|OVA|Extra|Special|OAD|Creditless)\]", re.I)
+BRACKET_CONTENT_RE = re.compile(r"\[([^\]]+)\]")
+GROUP_RELEASE_BRACKET_RE = re.compile(r"^\s*(?:\[[^\]]+\]\s*){2,}")
+LEADING_RELEASE_GROUP_RE = re.compile(r"^\s*\[([^\]]+)\]\s*([^\[\]\(\)]+)")
+BRACKET_NOISE_RE = re.compile(
+    r"""(?ix)^
+    (?:
+        \d{1,4}(?:v\d+)?
+        | \d{3,4}p | \d{2,3}\s*fps | 4k | 8k | 10bit | hdr | dv
+        | web[-_. ]?dl | web | bdrip | bluray | blu[-_. ]?ray | bd | dvd | hdtv
+        | x264 | x265 | h\.?264 | h\.?265 | hevc | avc | aac | flac | truehd | atmos | ddp?
+        | chs | cht | sc | tc | gb | big5 | zh[-_. ]?(?:cn|tw)?
+        | jpsc | jptc | jap | eng | sub | subs
+        | baha | b-global | bilibili | netflix | nf | dsnp | disney | amzn | prime
+        | mp4 | mkv | avi | ts
+    )$
+    """
+)
+EXTRA_TITLE_MARKER_RE = re.compile(
+    r"(?i)(?:recap|summary|compilation|digest|specials?|ova|oad|prologue|nc\.?\s*ver|creditless)"
+)
 EPISODE_NOISE_NUMBERS = {2160, 1080, 720, 480, 265, 264}
 
 ERROR_CODE_TIMEOUT = "TIMEOUT"
@@ -233,6 +256,7 @@ def clean_search_title(title):
     text = re.sub(r"[\[\]\(\)（）]", " ", title)
     # Drop common release group tags like UHA-WINGS, KTXP, or VC-BETA.
     text = re.sub(r"(?<![a-z0-9])[A-Z0-9]{2,}(?:-[A-Z0-9]{2,})+(?![a-z0-9])", " ", text)
+    text = LANG_TAG_COMBO_RE.sub(" ", text)
     text = re.sub(
         r"(?i)(?:10bit|FLAC|BluRay|1080p|720p|x264|x265|HEVC|Remastered|D3D-Raw|BDRip|Web-DL|NC\.Ver|完结合集|第.*?季|第.*?集|S\d{1,2}E\d{1,4}|EP?\s*\d{1,4})",
         "",
@@ -258,6 +282,85 @@ def is_meaningful_query_title(title):
     if not key:
         return False
     return key not in INVALID_QUERY_TITLES_NORMALIZED
+
+
+def _is_noise_title_fragment(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return True
+    compact = re.sub(r"[\s._-]+", "", raw)
+    if BRACKET_NOISE_RE.match(raw) or BRACKET_NOISE_RE.match(compact):
+        return True
+    tokens = [t for t in re.split(r"[\s._-]+", raw) if t]
+    if tokens and all(BRACKET_NOISE_RE.match(t) for t in tokens):
+        return True
+    return False
+
+
+def _looks_like_release_group(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if re.search(r"[!?锛侊紵]", raw):
+        return False
+    compact = re.sub(r"[\s._-]+", "", raw)
+    if "-" in raw:
+        return True
+    if len(compact) <= 16 and bool(re.fullmatch(r"[A-Za-z0-9]+", compact)):
+        return True
+    tokens = [t for t in re.split(r"[\s._-]+", raw) if t]
+    return 1 <= len(tokens) <= 3 and all(
+        re.fullmatch(r"[A-Za-z0-9]+", t) for t in tokens
+    )
+
+
+def extract_title_after_leading_release_group(pure_name):
+    """Extract title from names like [Group] Title [S01E01][tags]."""
+    text = str(pure_name or "")
+    match = LEADING_RELEASE_GROUP_RE.match(text)
+    if not match:
+        return ""
+
+    group = clean_search_title(match.group(1))
+    if not _looks_like_release_group(group):
+        return ""
+
+    title = clean_search_title(match.group(2))
+    title = re.sub(r"(?i)[\s._-]+S\d{1,2}E\d{1,4}.*$", "", title).strip()
+    title = re.sub(r"\s*[-\u2013]\s*\d{1,3}(?:v\d)?\s*$", "", title).strip()
+    title = re.sub(r"(?i)\s+S\d{1,2}\s*$", "", title).strip()
+    if not is_meaningful_query_title(title) or _is_noise_title_fragment(title):
+        return ""
+    return title
+
+
+def extract_bracket_title_from_filename(pure_name):
+    """Extract anime title from common [group][title][episode][tags] names."""
+    blocks = BRACKET_CONTENT_RE.findall(str(pure_name or ""))
+    if not blocks:
+        return ""
+
+    candidates = []
+    for idx, block in enumerate(blocks):
+        cleaned = clean_search_title(block)
+        if not is_meaningful_query_title(cleaned):
+            continue
+        if _is_noise_title_fragment(cleaned):
+            continue
+        candidates.append((idx, cleaned))
+
+    if not candidates:
+        return ""
+
+    group_release_style = bool(GROUP_RELEASE_BRACKET_RE.match(str(pure_name or "")))
+    for idx, cleaned in candidates:
+        if idx == 0 and len(candidates) > 1 and (
+            group_release_style or _looks_like_release_group(cleaned)
+        ):
+            continue
+        return cleaned
+
+    return candidates[0][1]
 
 
 def unique_keep_order(values):
@@ -333,6 +436,12 @@ def extract_episode_number(pure_name, guess_data=None, ai_data=None):
 
 def derive_title_from_filename(pure_name):
     text = str(pure_name or "")
+    leading_group_title = extract_title_after_leading_release_group(text)
+    if leading_group_title:
+        return leading_group_title
+    bracket_title = extract_bracket_title_from_filename(text)
+    if bracket_title:
+        return bracket_title
     text = text.replace("_", " ").replace(".", " ")
     text = re.sub(r"(?i)\bS\d{1,2}E\d{1,4}\b.*$", "", text)
     text = re.sub(r"(?i)\bEP?\s*\d{1,4}\b.*$", "", text)
@@ -380,6 +489,10 @@ def split_mixed_title(title):
     return results
 
 
+def text_mentions_extra_title(text):
+    return bool(EXTRA_TITLE_MARKER_RE.search(str(text or "")))
+
+
 def build_query_titles(item, query_title, ai_data, g):
     if isinstance(item, dict):
         raw_name = item.get("old_name", "")
@@ -388,16 +501,36 @@ def build_query_titles(item, query_title, ai_data, g):
         raw_name = getattr(item, "old_name", "") or ""
         item_dir = getattr(item, "dir", "") or ""
 
-    pure, _ = os.path.splitext(raw_name)
+    _known_exts = set(
+        e.strip().lower()
+        for e in (DEFAULT_VIDEO_EXTS + "," + DEFAULT_SUB_AUDIO_EXTS).split(",")
+        if e.strip()
+    )
+    pure = raw_name
+    for _ in range(3):
+        base, ext = os.path.splitext(pure)
+        if ext.lower() in _known_exts:
+            pure = base
+        else:
+            break
     dir_title = os.path.basename(item_dir)
     guess_title = clean_search_title((g.get("title") if g else None) or "")
+
+    show_dir_title = ""
+    if GENERIC_SEASON_TITLE_RE.match(dir_title.strip()):
+        parent_dir = os.path.dirname(item_dir)
+        if parent_dir:
+            show_dir_title = clean_search_title(os.path.basename(parent_dir))
 
     # Build base candidates
     candidates = [
         query_title,
         (ai_data or {}).get("title") if isinstance(ai_data, dict) else None,
         guess_title,
+        extract_title_after_leading_release_group(pure),
+        extract_bracket_title_from_filename(pure),
         derive_title_from_filename(pure),
+        show_dir_title,
         clean_search_title(pure),
         clean_search_title(dir_title),
     ]
@@ -419,6 +552,24 @@ def build_db_query_plan(item, query_title, ai_data, g):
     database with the AI title alone to avoid noisy filename tokens polluting
     TMDb/BGM candidates.
     """
+    if isinstance(item, dict):
+        raw_name = item.get("old_name", "")
+    else:
+        raw_name = getattr(item, "old_name", "") or ""
+
+    _known_exts = set(
+        e.strip().lower()
+        for e in (DEFAULT_VIDEO_EXTS + "," + DEFAULT_SUB_AUDIO_EXTS).split(",")
+        if e.strip()
+    )
+    pure = raw_name
+    for _ in range(3):
+        base, ext = os.path.splitext(pure)
+        if ext.lower() in _known_exts:
+            pure = base
+        else:
+            break
+
     query_titles = build_query_titles(item, query_title, ai_data, g)
     if not query_titles:
         return []
@@ -427,9 +578,36 @@ def build_db_query_plan(item, query_title, ai_data, g):
         (ai_data or {}).get("title") if isinstance(ai_data, dict) else ""
     )
     guess_title = clean_search_title((g.get("title") if g else None) or "")
+    derived_title = derive_title_from_filename(pure)
 
-    if ai_title and not is_meaningful_query_title(guess_title):
+    if ai_title and (
+        not is_meaningful_query_title(guess_title)
+        or normalize_compare_text(guess_title) != normalize_compare_text(ai_title)
+    ):
+        if is_meaningful_query_title(guess_title) and (
+            normalize_compare_text(guess_title) != normalize_compare_text(ai_title)
+        ):
+            return [[ai_title], [guess_title]]
         return [[ai_title]]
+
+    if (
+        derived_title
+        and LEADING_RELEASE_GROUP_RE.match(pure)
+        and normalize_compare_text(clean_search_title(pure))
+        != normalize_compare_text(derived_title)
+    ):
+        return [[derived_title]]
+
+    if (
+        derived_title
+        and GROUP_RELEASE_BRACKET_RE.match(pure)
+        and (
+            not is_meaningful_query_title(guess_title)
+            or normalize_compare_text(guess_title)
+            != normalize_compare_text(derived_title)
+        )
+    ):
+        return [[derived_title]]
 
     return [query_titles]
 

@@ -53,6 +53,18 @@ GENERIC_SEASON_DIR_RE = re.compile(
     r"(?i)^(?:season\s*\d{1,2}|s\s*\d{1,2}|第\s*\d{1,2}\s*季)$"
 )
 STANDARD_EPISODE_RE = re.compile(r"(?i)\bS\d{1,2}E\d{1,3}\b")
+ZERO_EPISODE_SPECIAL_RE = re.compile(r"(?i)\bS\s*0*(\d{1,2})\s*E\s*0*0\b")
+ALT_ZERO_EPISODE_SPECIAL_RE = re.compile(r"(?i)\b(\d{1,2})x0*0\b")
+DECIMAL_EPISODE_RE = re.compile(
+    r"""(?ix)
+    (?:
+        s\d{1,2}\s*e\d{1,4}\.\d(?!\d)
+        | (?:ep?)\s*0*\d{1,4}\.\d(?!\d)
+        | 第\s*0*\d{1,4}\.\d(?!\d)\s*[集话話]
+        | [\[\(（]\s*0*\d{1,4}\.\d(?!\d)\s*[\]\)）]
+        | (?<![.\d])-\s*0*\d{1,2}\.\d(?!\d)(?=[\s\[\(（]|$)
+    )"""
+)
 AI_RATE_LIMIT_COOLDOWN_SECONDS = 60.0
 
 
@@ -81,6 +93,48 @@ def _is_meaningful_title(title):
     if GENERIC_TITLE_RE.match(raw):
         return False
     return bool(normalize_compare_text(raw))
+
+
+def _season_value_or_default(value, default=1):
+    if value in (None, ""):
+        return default
+    return safe_int(value, default)
+
+
+def _extract_zero_episode_special_slot(pure_name):
+    text = str(pure_name or "")
+    for pattern in (ZERO_EPISODE_SPECIAL_RE, ALT_ZERO_EPISODE_SPECIAL_RE):
+        match = pattern.search(text)
+        if not match:
+            continue
+        season_num = safe_int(match.group(1), -1)
+        if 1 <= season_num <= 99:
+            return season_num
+    return None
+
+
+def _is_decimal_recap_episode(pure_name):
+    return bool(DECIMAL_EPISODE_RE.search(str(pure_name or "")))
+
+
+def _mark_skipped_recap(gui, item, title, reason):
+    item.metadata = {
+        "id": "None",
+        "parse_source": str(getattr(item, "parse_source", "") or ""),
+        "skip_reason": reason,
+    }
+    item.new_name_only = ""
+    item.full_target = ""
+    gui.root.after(
+        0,
+        lambda: gui.update_item_display(
+            item,
+            title=title or "已跳过",
+            match_id="None",
+            target="(总集篇已跳过)",
+            status="已跳过(总集篇)",
+        ),
+    )
 
 
 def _fetch_ai_parse(gui, pure_for_parse):
@@ -119,8 +173,6 @@ def _fetch_ai_parse(gui, pure_for_parse):
     if gui.prefer_ollama.get():
         if gui.ollama_url.get().strip() and gui.ollama_model.get().strip():
             ai_data, ai_msg = gui._parse_with_ollama(pure_for_parse)
-            if ai_data is None and gui.sf_api_key.get().strip():
-                ai_data, ai_msg = _fetch_remote()
             return ai_data, ai_msg
         if gui.sf_api_key.get().strip():
             return _fetch_remote()
@@ -206,7 +258,7 @@ def _derive_guessit_fields(gui, pure, dir_p, g, extracted_ep):
             year_dir = parent_dir
     dir_season = extract_season_from_dir(dir_p)
     season = gui._pick_season(pure, g, dir_season if dir_season is not None else 1)
-    episode = extracted_ep or 1
+    episode = extracted_ep if extracted_ep is not None else 1
     return title, year, season, episode
 
 
@@ -441,7 +493,9 @@ def bg_update_single_ui(gui, idx, title, t_id, msg, meta):
 
         # Extract episode number from filename first, then fallback to metadata
         extracted_ep = extract_episode_number(pure, g)
-        raw_e = extracted_ep if extracted_ep is not None else (g.get("episode") or m.get("e", 1))
+        raw_e = extracted_ep if extracted_ep is not None else g.get("episode")
+        if raw_e in (None, ""):
+            raw_e = m.get("e", 1)
         if isinstance(raw_e, list):
             raw_e = raw_e[0]
 
@@ -723,10 +777,14 @@ def process_task(gui, i, advance_progress=True):
         if can_reuse_cached_parse:
             t = cached_ai["title"]
             y = cached_ai.get("year")
-            s = gui._pick_season(pure, g, cached_ai.get("season") or 1)
+            s = gui._pick_season(
+                pure,
+                g,
+                _season_value_or_default(cached_ai.get("season"), 1),
+            )
             # Directory cache is shared by sibling files; never reuse another
             # file's episode number for the current file.
-            e = extracted_ep or guess_episode
+            e = extracted_ep if extracted_ep is not None else guess_episode
             ai_data = cached_ai
             parse_source = cached_ai.get("parse_source", "guessit")
             ai_msg = _cache_reuse_status(parse_source)
@@ -746,9 +804,7 @@ def process_task(gui, i, advance_progress=True):
                     ai_parse_succeeded = True
                     t = ai_data.get("title", "未知")
                     y = ai_data.get("year")
-                    ai_season = safe_int(ai_data.get("season"), 1)
-                    if ai_season < 1:
-                        ai_season = 1
+                    ai_season = _season_value_or_default(ai_data.get("season"), 1)
                     s = gui._pick_season(pure, g, ai_season)
                     e = (
                         extracted_ep
@@ -857,6 +913,17 @@ def process_task(gui, i, advance_progress=True):
                     e = int(sp_match.group(1))
                 elif PROLOGUE_RE.search(pure):
                     e = 0
+
+        recap_status = ""
+        zero_episode_special = _extract_zero_episode_special_slot(pure)
+        if zero_episode_special is not None:
+            s = 0
+            e = zero_episode_special
+            e_calc = zero_episode_special
+            recap_status = "总集篇归入S00"
+        elif _is_decimal_recap_episode(pure):
+            _mark_skipped_recap(gui, item, t, "decimal_recap")
+            return
 
         media_type = gui._resolve_media_type(g)
         is_tv = media_type == "episode"
@@ -1123,7 +1190,7 @@ def process_task(gui, i, advance_progress=True):
                 title=safe_std_t,
                 match_id=tid,
                 target=item.full_target or new_fn,
-                status=gui._build_status_text(ai_msg, db_m),
+                status=gui._build_status_text(ai_msg, recap_status, db_m),
             ),
         )
         if str(item.metadata.get("id") or "None") != "None":
