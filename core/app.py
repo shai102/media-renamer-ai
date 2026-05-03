@@ -120,7 +120,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v3.0")
+        self.root.title("媒体归档刮削助手 v3.1")
         self.root.geometry("1300x900")
         self.bootstrap_style = getattr(self.root, "style", None)
 
@@ -1992,22 +1992,20 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                     hit_msg += f" ({direct_query})"
                 return candidate_to_result(strong_direct_hit, hit_msg)
 
-        ranked_candidates, emb_pick, emb_msg = self._rerank_candidates_with_embedding(
+        ranked_candidates, _emb_pick, emb_msg = self._rerank_candidates_with_embedding(
             item, query_title, year, is_tv, source_name, candidates
         )
-        if emb_pick:
-            hit_msg = f"Embedding判定/{source_name}命中"
-            if emb_msg:
-                hit_msg += f" ({emb_msg})"
-            return candidate_to_result(emb_pick, hit_msg)
 
+        ai_attempted = False
         pick_label = "Ollama判定"
         if self._can_use_online_ai_for_pick():
+            ai_attempted = True
             chosen, reason = self._pick_candidate_with_online_ai(
                 item, query_title, year, is_tv, source_name, ranked_candidates
             )
             pick_label = "在线AI判定"
         else:
+            ai_attempted = True
             chosen, reason = self._pick_candidate_with_ollama(
                 item, query_title, year, is_tv, source_name, ranked_candidates
             )
@@ -2018,19 +2016,6 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             if reason:
                 hit_msg += f" ({reason})"
             return candidate_to_result(chosen, hit_msg)
-
-        auto_pick, auto_reason = self._auto_pick_candidate_by_score(
-            query_title, year, source_name, ranked_candidates
-        )
-        if auto_pick:
-            hit_msg = f"自动评分判定/{source_name}命中"
-            if emb_msg:
-                hit_msg += f" ({emb_msg})"
-            if reason:
-                hit_msg += f" ({pick_label}: {reason})"
-            if auto_reason:
-                hit_msg += f" ({auto_reason})"
-            return candidate_to_result(auto_pick, hit_msg)
 
         manual_choice = self._request_manual_candidate_choice(
             item,
@@ -2045,11 +2030,17 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 hit_msg += f" ({emb_msg})"
             return candidate_to_result(manual_choice, hit_msg)
 
-        return query_title, "None", "待手动确认", {}
+        pending_reason = "候选存在歧义，需手动确认"
+        if ai_attempted:
+            pending_reason = "候选存在歧义，AI未能稳定判定"
+        if emb_msg:
+            pending_reason += f" ({emb_msg})"
+        return query_title, "None", pending_reason, {}
 
     def _resolve_db_match(self, item, query_title, year, is_tv, mode, ai_data, g):
         """解析数据库候选，必要时调用本地模型或弹窗手动确认"""
         source_name = "TMDb" if mode == "siliconflow_tmdb" else "BGM"
+        db_year = None if is_tv else year
         query_groups = build_db_query_plan(item, query_title, ai_data, g)
         merged = []
         seen_ids = set()
@@ -2077,7 +2068,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
                 if (
                     mode == "siliconflow_tmdb"
-                    and self._pick_strong_tmdb_direct_hit([q], year, cur)[0] is not None
+                    and self._pick_strong_tmdb_direct_hit([q], db_year, cur)[0] is not None
                 ):
                     break
                 if len(found) >= limit:
@@ -2089,13 +2080,13 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 current = _search_queries(
                     query_titles,
                     lambda q: fetch_tmdb_candidates(
-                        q, year, is_tv, self.tmdb_api_key.get()
+                        q, db_year, is_tv, self.tmdb_api_key.get()
                     ),
                 )
             else:
                 current = _search_queries(
                     query_titles,
-                    lambda q: fetch_bgm_candidates(q, year, self.bgm_api_key.get()),
+                    lambda q: fetch_bgm_candidates(q, db_year, self.bgm_api_key.get()),
                 )
 
             if current:
@@ -2107,7 +2098,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             for query_titles in query_groups:
                 current = _search_queries(
                     query_titles,
-                    lambda q: fetch_bgm_candidates(q, year, self.bgm_api_key.get()),
+                    lambda q: fetch_bgm_candidates(q, db_year, self.bgm_api_key.get()),
                 )
                 if current:
                     merged.extend(current)
@@ -2121,7 +2112,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             t_hit, tid_hit, msg_hit, meta_hit = self._select_best_db_match(
                 item,
                 used_query,
-                year,
+                db_year,
                 is_tv,
                 source_name,
                 merged,
@@ -2135,7 +2126,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 meta_hit["_provider"] = "bgm"
                 if self.tmdb_api_key.get().strip():
                     tmdb_candidates = fetch_tmdb_candidates(
-                        t_hit or used_query, year, is_tv, self.tmdb_api_key.get()
+                        t_hit or used_query, db_year, is_tv, self.tmdb_api_key.get()
                     )
                     if tmdb_candidates:
                         tmdb_meta = tmdb_candidates[0].get("meta") or {}

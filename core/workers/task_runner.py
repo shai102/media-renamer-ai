@@ -243,11 +243,24 @@ def _retry_rate_limited_siblings(gui, current_index, dir_p):
 def _derive_guessit_fields(gui, pure, dir_p, g, extracted_ep):
     """Build the baseline parse result from guessit and directory hints."""
     title = g.get("title") or derive_title_from_filename(pure) or "未知"
+    dir_season = extract_season_from_dir(dir_p)
+    season = gui._pick_season(pure, g, dir_season if dir_season is not None else 1)
     year = g.get("year")
+    if year and season > 1:
+        year = None
+
     if not year:
-        year_dir = dir_p
-        for _ in range(3):
+        year_dir = os.path.dirname(dir_p) if dir_season is not None else dir_p
+        for _ in range(4):
             folder_name = os.path.basename(year_dir)
+            # Multi-season TV packs often embed the season year in folder names
+            # like "第七季...2017...", which should not override the series year.
+            if season > 1 and gui._extract_explicit_season(folder_name) is not None:
+                parent_dir = os.path.dirname(year_dir)
+                if not parent_dir or parent_dir == year_dir:
+                    break
+                year_dir = parent_dir
+                continue
             year_match = re.search(r"\b((?:19|20)\d{2})\b", folder_name)
             if year_match:
                 year = int(year_match.group(1))
@@ -256,8 +269,6 @@ def _derive_guessit_fields(gui, pure, dir_p, g, extracted_ep):
             if not parent_dir or parent_dir == year_dir:
                 break
             year_dir = parent_dir
-    dir_season = extract_season_from_dir(dir_p)
-    season = gui._pick_season(pure, g, dir_season if dir_season is not None else 1)
     episode = extracted_ep if extracted_ep is not None else 1
     return title, year, season, episode
 
@@ -735,6 +746,12 @@ def process_task(gui, i, advance_progress=True):
             derive_title_from_filename(pure),
             os.path.basename(os.path.dirname(dir_p or "")),
         ]
+        folder_id_title_hints = [
+            guess_title,
+            derive_title_from_filename(pure),
+            os.path.basename(os.path.dirname(dir_p or "")),
+            os.path.basename(dir_p or ""),
+        ]
 
         ai_mode_obj = getattr(gui, "ai_mode", None)
         ai_mode_val = str(ai_mode_obj.get() if ai_mode_obj else "assist").strip().lower()
@@ -772,7 +789,9 @@ def process_task(gui, i, advance_progress=True):
                 can_reuse_cached_parse = cached_parse_source != "ai"
 
         # Check for folder ID early to skip AI recognition if folder ID exists
-        has_folder_id = bool(extract_db_id_from_path(item.path, mode))
+        has_folder_id = bool(
+            extract_db_id_from_path(item.path, mode, folder_id_title_hints)
+        )
 
         if can_reuse_cached_parse:
             t = cached_ai["title"]
@@ -943,7 +962,16 @@ def process_task(gui, i, advance_progress=True):
         if forced_o != 0:
             e_calc = max(1, safe_int(e, 1) + forced_o)
 
-        folder_id_for_cache = extract_db_id_from_path(item.path, mode) or ""
+        folder_id_title_hints = [
+            t,
+            guess_title,
+            derive_title_from_filename(pure),
+            os.path.basename(os.path.dirname(dir_p or "")),
+            os.path.basename(dir_p or ""),
+        ]
+        folder_id_for_cache = (
+            extract_db_id_from_path(item.path, mode, folder_id_title_hints) or ""
+        )
         cache_key = f"{t}_{safe_str(y)}_{is_tv}_{mode}_{folder_id_for_cache}"
 
         with gui.cache_lock:
@@ -958,7 +986,9 @@ def process_task(gui, i, advance_progress=True):
         if not db_c:
             if is_resolver:
                 try:
-                    folder_id = extract_db_id_from_path(item.path, mode)
+                    folder_id = extract_db_id_from_path(
+                        item.path, mode, folder_id_title_hints
+                    )
                     if folder_id:
                         if mode == "siliconflow_tmdb":
                             _ft, _fid, _fm, _fmeta = fetch_tmdb_by_id(
