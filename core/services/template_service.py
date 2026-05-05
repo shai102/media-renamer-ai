@@ -15,6 +15,10 @@ _JINJA_ENV = Environment(
 )
 
 _JINJA_EXT_RE = re.compile(r"{{\s*ext\s*}}")
+_JINJA_EXT_WITH_SEPARATOR_RE = re.compile(r"(\s*-\s*)?{{\s*ext\s*}}")
+_MEDIA_SUFFIX_PLACEHOLDER_RE = re.compile(
+    r"\{media_suffix\}|\{\{\s*media_suffix\s*\}\}"
+)
 
 
 def is_advanced_template(template):
@@ -75,6 +79,7 @@ def cleanup_rendered_filename(text):
     cleaned = re.sub(r"\s*[\(\[]\s*[\)\]]", "", cleaned)
     cleaned = re.sub(r"\s*\{\s*\}", "", cleaned)
     cleaned = re.sub(r"\s*\(\s*\)", "", cleaned)
+    cleaned = re.sub(r"\s+-\s*-\s+", " - ", cleaned)
     cleaned = re.sub(r"\s*-\s*(?=\.)|\s*-\s*$", "", cleaned)
     cleaned = re.sub(r"\s+(?=\.)", "", cleaned)
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
@@ -85,11 +90,20 @@ def _inject_media_suffix_advanced(template, media_suffix, preserve_media_suffix)
     """Auto-append media suffix for advanced templates when omitted."""
     working = str(template or "")
     suffix = str(media_suffix or "").strip()
-    if not preserve_media_suffix or not suffix or "media_suffix" in working:
+    if (
+        not preserve_media_suffix
+        or not suffix
+        or _MEDIA_SUFFIX_PLACEHOLDER_RE.search(working)
+    ):
         return working
 
-    if _JINJA_EXT_RE.search(working):
-        return _JINJA_EXT_RE.sub(" - {{ media_suffix }}{{ ext }}", working, count=1)
+    match = _JINJA_EXT_WITH_SEPARATOR_RE.search(working)
+    if match:
+        separator = match.group(1) or " - "
+        replacement = f"{separator}{{{{ media_suffix }}}}{{{{ ext }}}}"
+        return _JINJA_EXT_WITH_SEPARATOR_RE.sub(replacement, working, count=1)
+    if re.search(r"\s*-\s*$", working):
+        return working + "{{ media_suffix }}"
     return working + " - {{ media_suffix }}"
 
 

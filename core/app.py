@@ -120,7 +120,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v3.1")
+        self.root.title("媒体归档刮削助手 v3.2")
         self.root.geometry("1300x900")
         self.bootstrap_style = getattr(self.root, "style", None)
 
@@ -808,6 +808,86 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         )
         return new_name, media_suffix
 
+    def _show_filename_template_preview(self, template, is_tv=True, parent=None):
+        """Render a sample filename preview for the current template settings."""
+        template_text = str(template or "").strip()
+        if not template_text:
+            messagebox.showinfo(
+                "模板预览",
+                "请先输入文件名模板。",
+                parent=parent or self.root,
+            )
+            return
+
+        sample = {
+            "title": "正年" if is_tv else "流媒体示例电影",
+            "year": "2024",
+            "season": "01",
+            "episode": "01",
+            "ep_name": "无法城市" if is_tv else "",
+            "ext": ".strm" if is_tv else ".mkv",
+            "source_filename": (
+                "正年.S01E01.2160p.TVING.WEB-DL.H265.AAC-ZeroTV.strm"
+                if is_tv
+                else "流媒体示例电影.2024.2160p.TVING.WEB-DL.H265.AAC-ZeroTV.mkv"
+            ),
+            "pure_name": (
+                "正年.S01E01.2160p.TVING.WEB-DL.H265.AAC-ZeroTV"
+                if is_tv
+                else "流媒体示例电影.2024.2160p.TVING.WEB-DL.H265.AAC-ZeroTV"
+            ),
+        }
+
+        try:
+            preview_name, media_suffix = self._render_media_filename(
+                template_text,
+                title=sample["title"],
+                year=sample["year"],
+                season=sample["season"],
+                episode=sample["episode"],
+                ep_name=sample["ep_name"],
+                ext=sample["ext"],
+                source_filename=sample["source_filename"],
+                pure_name=sample["pure_name"],
+                source_provider="tmdb",
+                media_id="119495" if is_tv else "939243",
+                is_tv=is_tv,
+            )
+        except Exception as err:
+            messagebox.showerror(
+                "模板预览失败",
+                f"当前模板无法渲染预览：\n{err}",
+                parent=parent or self.root,
+            )
+            return
+
+        media_suffix_text = media_suffix or "未启用 / 未提取"
+        preview_lines = [
+            f"模板类型：{'剧集 (TV)' if is_tv else '电影 (Movie)'}",
+            f"当前模板：{template_text}",
+            "",
+            f"预览结果：{preview_name}",
+            "",
+            "示例变量：",
+            f"title = {sample['title']}",
+            f"year = {sample['year']}",
+            f"season = {sample['season']}",
+            f"episode = {sample['episode']}",
+            f"ep_name = {sample['ep_name'] or '(空)'}",
+            f"ext = {sample['ext']}",
+            f"media_suffix = {media_suffix_text}",
+            (
+                "保留媒体信息后缀 = 开启"
+                if self.preserve_media_suffix.get()
+                else "保留媒体信息后缀 = 关闭"
+            ),
+        ]
+        messagebox.showinfo(
+            "模板预览",
+            "\n".join(preview_lines),
+            parent=parent or self.root,
+        )
+
     def _has_ai_backend_configured(self):
         """Return whether at least one usable AI backend is configured."""
         if self.prefer_ollama.get():
@@ -1293,14 +1373,36 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         win = tk.Toplevel(self.root)
         win.title("高级设置与 API 配置")
         win.transient(self.root)
-        center_window(win, self.root, 860, 760)
-        win.after_idle(lambda: center_window(win, self.root, 860, 760))
+        saved_settings_geometry = self.get_saved_geometry(
+            "settings_window_geometry", min_width=760, min_height=620
+        )
+        if saved_settings_geometry:
+            win.geometry(saved_settings_geometry)
+        else:
+            center_window(win, self.root, 860, 760)
+            win.after_idle(lambda: center_window(win, self.root, 860, 760))
         win.minsize(760, 620)
         win.configure(bg=self.colors["bg"])
         win.grab_set()
         win.focus_set()
         win.columnconfigure(0, weight=1)
         win.rowconfigure(0, weight=1)
+
+        def _remember_settings_geometry():
+            try:
+                win.update_idletasks()
+                self.remember_window_geometry(
+                    "settings_window_geometry",
+                    win.winfo_geometry(),
+                    min_width=760,
+                    min_height=620,
+                )
+            except Exception as err:
+                logging.debug("保存设置窗口尺寸失败: %s", err)
+
+        def _close_settings():
+            _remember_settings_geometry()
+            win.destroy()
 
         content_wrap = ttk.Frame(win, style="App.TFrame")
         content_wrap.grid(row=0, column=0, sticky="nsew")
@@ -1560,6 +1662,14 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Entry(f, textvariable=self.tv_format).grid(
             row=row, column=1, sticky="ew", pady=5, padx=10
         )
+        ttk.Button(
+            f,
+            text="预览",
+            style="secondary.TButton",
+            command=lambda: self._show_filename_template_preview(
+                self.tv_format.get(), is_tv=True, parent=win
+            ),
+        ).grid(row=row, column=2, sticky="w", pady=5)
         row += 1
 
         ttk.Label(f, text="电影 (Movie) 格式:").grid(
@@ -1568,6 +1678,14 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         ttk.Entry(f, textvariable=self.movie_format).grid(
             row=row, column=1, sticky="ew", pady=5, padx=10
         )
+        ttk.Button(
+            f,
+            text="预览",
+            style="secondary.TButton",
+            command=lambda: self._show_filename_template_preview(
+                self.movie_format.get(), is_tv=False, parent=win
+            ),
+        ).grid(row=row, column=2, sticky="w", pady=5)
         row += 1
 
         _wrap_label(
@@ -1612,13 +1730,14 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             action_bar,
             text="保存并生效 (无需重启)",
             style="success.TButton",
-            command=lambda: [self.save_config(), win.destroy()],
+            command=lambda: [_remember_settings_geometry(), self.save_config(), win.destroy()],
         ).grid(row=0, column=1, sticky="e")
 
         self._refresh_ollama_model_options(
             ollama_model_combo, embedding_model_combo, ollama_status_var, False
         )
         win.after_idle(_update_wrap_labels)
+        win.protocol("WM_DELETE_WINDOW", _close_settings)
 
     def _set_ollama_combobox_values(self, combobox, current_value, values):
         """更新下拉框候选值，同时保留当前值。"""

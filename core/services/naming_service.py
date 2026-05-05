@@ -63,6 +63,10 @@ MEDIA_SUFFIX_START_RE = re.compile(
     )
     """,
 )
+LEGACY_EXT_PLACEHOLDER_RE = re.compile(r"(\s*-\s*)?\{ext\}")
+MEDIA_SUFFIX_PLACEHOLDER_RE = re.compile(
+    r"\{media_suffix\}|\{\{\s*media_suffix\s*\}\}"
+)
 
 
 def extract_lang_and_ext(filename, lang_tags):
@@ -114,8 +118,16 @@ def apply_media_suffix_template(template, media_suffix, preserve_media_suffix):
     """Auto-append media suffix before extension when enabled and template omits it."""
     working = str(template or "")
     suffix = str(media_suffix or "").strip()
-    if preserve_media_suffix and suffix and "{media_suffix}" not in working:
-        working = working.replace("{ext}", " - {media_suffix}{ext}")
+    if preserve_media_suffix and suffix and not MEDIA_SUFFIX_PLACEHOLDER_RE.search(working):
+        match = LEGACY_EXT_PLACEHOLDER_RE.search(working)
+        if match:
+            separator = match.group(1) or " - "
+            replacement = f"{separator}{{media_suffix}}{{ext}}"
+            working = LEGACY_EXT_PLACEHOLDER_RE.sub(replacement, working, count=1)
+        elif re.search(r"\s*-\s*$", working):
+            working = working + "{media_suffix}"
+        else:
+            working = working + " - {media_suffix}"
     return working
 
 
