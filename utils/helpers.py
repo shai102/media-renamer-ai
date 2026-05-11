@@ -931,6 +931,9 @@ def build_query_titles(item, query_title, ai_data, g):
 
     dir_title = os.path.basename(item_dir)
     guess_title = clean_search_title((g.get("title") if g else None) or "")
+    ai_title = clean_search_title(
+        (ai_data or {}).get("title") if isinstance(ai_data, dict) else ""
+    )
 
     show_dir_title = ""
     if GENERIC_SEASON_TITLE_RE.match(dir_title.strip()):
@@ -975,6 +978,11 @@ def build_query_titles(item, query_title, ai_data, g):
             expanded_candidates.append(normalized)
 
     ordered = unique_keep_order(expanded_candidates)
+    protected_norms = {
+        normalize_compare_text(text)
+        for text in (clean_search_title(query_title), guess_title, ai_title)
+        if is_meaningful_query_title(text)
+    }
     strong_norms = [
         normalize_compare_text(text)
         for text in ordered
@@ -987,7 +995,15 @@ def build_query_titles(item, query_title, ai_data, g):
         norm = normalize_compare_text(text)
         if (
             len(str(text or "").split()) == 1
+            and len(norm) <= 2
+            and re.fullmatch(r"[A-Za-z']+", str(text or ""))
+            and norm not in protected_norms
+        ):
+            continue
+        if (
+            len(str(text or "").split()) == 1
             and len(norm) < 8
+            and norm not in protected_norms
             and any(norm != strong and norm in strong for strong in strong_norms)
         ):
             continue
