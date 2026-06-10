@@ -1,5 +1,6 @@
-# 媒体归档刮削助手 v3.3
-TG 问题反馈群：<https://t.me/+Wx34NdYY_x1iNjg1>
+# 媒体归档刮削助手 v3.3 本项目后续应该不会在更新了 现在主要优化Scraping-Automation-Assistant这个项目！
+
+TG 问题反馈群：<https://t.me/+Wx34NdYY_x1iNjg1> 
 
 一个面向动漫、剧集、电影、STRM 场景的桌面端媒体整理工具。 AIkey如果不是收费的情况下，推荐是使用本地AI+Embedding 模型使用效果最佳！以免限速导致的识别问题！模型推荐qwen3.5 9B+nomic-embed-text或者 bge-m3 Embedding 模型！
 支持批量识别、手动锁定、原地重命名、归档移动、原地整理、NFO/图片刮削，以及本地 Ollama / OpenAI 兼容接口混合识别。
