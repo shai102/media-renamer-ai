@@ -92,6 +92,8 @@ from utils.helpers import (
     build_db_query_plan,
     build_query_titles,
     candidate_looks_like_extra_title,
+    candidate_looks_like_movie_version,
+    candidate_looks_like_unrequested_subtitle_arc,
     candidate_looks_like_unrequested_variant,
     candidate_to_result,
     center_window,
@@ -111,8 +113,26 @@ from utils.helpers import (
     session,
     text_mentions_extra_title,
     write_nfo,
+    years_within_tolerance,
     _nfo_has_empty_plot,
 )
+
+
+def _has_cjk(text):
+    return bool(re.search(r"[\u4e00-\u9fff\u3040-\u30ff]", str(text or "")))
+
+
+def _is_substantial_query_norm(norm):
+    """判断规范化后的查询标题是否足够长以信任直搜命中。
+
+    拉丁标题需 >=6 字符避免误命中；CJK 标题天然短（如 咒术回战=4字），
+    否则永远无法命中，故 CJK 放宽到 >=2 字符。
+    """
+    if not norm:
+        return False
+    if _has_cjk(norm):
+        return len(norm) >= 2
+    return len(norm) >= 6
 
 
 class MediaRenamerGUI(ConfigMixin, ListMixin):
@@ -120,7 +140,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def __init__(self, root):
         self.root = root
-        self.root.title("媒体归档刮削助手 v3.3")
+        self.root.title("媒体归档刮削助手 v3.4")
         self.root.geometry("1300x900")
         self.bootstrap_style = getattr(self.root, "style", None)
 
@@ -1955,13 +1975,13 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
     def _pick_strong_tmdb_direct_hit(self, query_titles, year, candidates):
         """Trust a direct TMDb rank-1 hit before semantic rerank/model override."""
-        requested_year = str(year or "").strip()
+        requested_year = safe_str(year).strip()
         preferred_norms = []
         seen_norms = set()
         for raw in query_titles or []:
             text = str(raw or "").strip()
             norm = normalize_compare_text(text)
-            if not norm or len(norm) < 6 or norm in seen_norms:
+            if not _is_substantial_query_norm(norm) or norm in seen_norms:
                 continue
             seen_norms.add(norm)
             preferred_norms.append(norm)
@@ -1994,7 +2014,7 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             top_meta = top.get("meta") or {}
             top_rank = safe_int(top_meta.get("search_rank"), 999)
             top_year = extract_year_from_release(top.get("release") or "")
-            year_ok = not requested_year or not top_year or top_year == requested_year
+            year_ok = years_within_tolerance(requested_year, top_year)
             if top_rank == 1 and year_ok:
                 return top, str(top_meta.get("search_query") or "")
 
@@ -2061,17 +2081,39 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                     {},
                 )
 
+        if is_tv and source_name.startswith("TMDb"):
+            source_text = f"{raw_name} {query_title}"
+            tv_candidates = [
+                c
+                for c in candidates
+                if not candidate_looks_like_movie_version(c)
+                and not candidate_looks_like_unrequested_subtitle_arc(
+                    c, query_title, source_text
+                )
+            ]
+            if tv_candidates:
+                candidates = tv_candidates
+
         if len(candidates) == 1 and (
             not source_name.startswith("TMDb") or rank_pick_allowed
         ):
             return candidate_to_result(candidates[0], f"{source_name}命中")
 
         # 年份预排序：将年份匹配的候选提前，减少同名不同年作品的误匹配
-        if year:
-            year_str = str(year).strip()
+        requested_year = str(year).strip() if year else ""
+
+        def year_compatible(candidate):
+            if not requested_year:
+                return True
+            candidate_year = extract_year_from_release(candidate.get("release") or "")
+            if not candidate_year:
+                return True
+            return years_within_tolerance(requested_year, candidate_year)
+
+        if requested_year:
             candidates = sorted(
                 candidates,
-                key=lambda c: 0 if extract_year_from_release(c.get("release") or "") == year_str else 1,
+                key=lambda c: 0 if extract_year_from_release(c.get("release") or "") == requested_year else 1,
             )
 
         # 精确/高置信标题匹配：无需 embedding/Ollama 直接命中
@@ -2084,57 +2126,90 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
             for _c in candidates:
                 _ct = _re.sub(r"[\W_]+", "", str(_c.get("title") or "").lower())
                 _ca = _re.sub(r"[\W_]+", "", str(_c.get("alt_title") or "").lower())
+                _co = _re.sub(
+                    r"[\W_]+",
+                    "",
+                    str((_c.get("meta") or {}).get("original_title") or "").lower(),
+                )
                 _s = max(
                     _difflib.SequenceMatcher(None, _q_norm, _ct).ratio() if _ct else 0.0,
                     _difflib.SequenceMatcher(None, _q_norm, _ca).ratio() if _ca else 0.0,
+                    _difflib.SequenceMatcher(None, _q_norm, _co).ratio() if _co else 0.0,
                 )
                 _scores.append((_s, _c))
-                if _ct == _q_norm or _ca == _q_norm:
+                if (
+                    _ct == _q_norm
+                    or _ca == _q_norm
+                    or _co == _q_norm
+                ) and year_compatible(_c):
                     _exact = _c
                     break
             if _exact is None and _scores:
                 _scores.sort(key=lambda x: x[0], reverse=True)
                 _top_s, _top_c = _scores[0]
                 _second_s = _scores[1][0] if len(_scores) > 1 else 0.0
-                if _top_s >= 0.90 and (_top_s - _second_s) >= 0.20:
+                if _top_s >= 0.90 and (_top_s - _second_s) >= 0.20 and year_compatible(_top_c):
                     _exact = _top_c
             if _exact is not None:
                 return candidate_to_result(_exact, f"标题匹配/{source_name}命中")
 
-        if source_name.startswith("TMDb"):
+        if source_name.startswith("TMDb") and rank_pick_allowed:
             strong_direct_hit, direct_query = self._pick_strong_tmdb_direct_hit(
                 [query_title, recognized_title], year, candidates
             )
             if strong_direct_hit is not None:
-                hit_msg = f"TMDb直达命中"
+                hit_msg = f"TMDb直搜首位/{source_name}命中"
                 if direct_query and normalize_compare_text(direct_query) != normalize_compare_text(query_title):
-                    hit_msg += f" ({direct_query})"
+                    hit_msg += " (别名直搜)"
                 return candidate_to_result(strong_direct_hit, hit_msg)
 
+        # 自动评分前置命中：在进入 embedding/AI 前尝试纯评分自动选
+        score_pick, score_reason = self._auto_pick_candidate_by_score(
+            query_title, year, source_name, candidates
+        )
+        if score_pick is not None:
+            return candidate_to_result(score_pick, f"自动评分/{source_name}命中 ({score_reason})")
+
+        prefer_ollama = bool(self.prefer_ollama.get())
+        online_ready = self._can_use_online_ai_for_pick()
+        ollama_ready = self._can_use_ollama_for_pick()
         ranked_candidates, _emb_pick, emb_msg = self._rerank_candidates_with_embedding(
             item, query_title, year, is_tv, source_name, candidates
         )
 
-        ai_attempted = False
-        pick_label = "Ollama判定"
-        if self._can_use_online_ai_for_pick():
-            ai_attempted = True
-            chosen, reason = self._pick_candidate_with_online_ai(
-                item, query_title, year, is_tv, source_name, ranked_candidates
-            )
-            pick_label = "在线AI判定"
-        else:
-            ai_attempted = True
-            chosen, reason = self._pick_candidate_with_ollama(
-                item, query_title, year, is_tv, source_name, ranked_candidates
-            )
-        if chosen:
-            hit_msg = f"{pick_label}/{source_name}命中"
+        def _candidate_result_from_model(label, chosen, reason):
+            hit_msg = f"{label}/{source_name}命中"
             if emb_msg:
                 hit_msg += f" ({emb_msg})"
             if reason:
                 hit_msg += f" ({reason})"
             return candidate_to_result(chosen, hit_msg)
+
+        ai_attempted = False
+
+        if prefer_ollama and ollama_ready:
+            ai_attempted = True
+            chosen, reason = self._pick_candidate_with_ollama(
+                item, query_title, year, is_tv, source_name, ranked_candidates
+            )
+            if chosen:
+                return _candidate_result_from_model("Ollama判定", chosen, reason)
+
+        if online_ready:
+            ai_attempted = True
+            chosen, reason = self._pick_candidate_with_online_ai(
+                item, query_title, year, is_tv, source_name, ranked_candidates
+            )
+            if chosen:
+                return _candidate_result_from_model("在线AI判定", chosen, reason)
+
+        if (not prefer_ollama) and ollama_ready:
+            ai_attempted = True
+            chosen, reason = self._pick_candidate_with_ollama(
+                item, query_title, year, is_tv, source_name, ranked_candidates
+            )
+            if chosen:
+                return _candidate_result_from_model("Ollama判定", chosen, reason)
 
         manual_choice = self._request_manual_candidate_choice(
             item,
@@ -2152,6 +2227,8 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
         pending_reason = "候选存在歧义，需手动确认"
         if ai_attempted:
             pending_reason = "候选存在歧义，AI未能稳定判定"
+        elif not (online_ready or ollama_ready):
+            pending_reason = "候选存在歧义，未启用AI自动判定"
         if emb_msg:
             pending_reason += f" ({emb_msg})"
         return query_title, "None", pending_reason, {}
@@ -2212,6 +2289,22 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 merged.extend(current)
                 break
 
+        type_flipped = False
+        if not merged and mode == "siliconflow_tmdb":
+            flipped_tv = not is_tv
+            flipped_year = None if flipped_tv else year
+            for query_titles in query_groups:
+                current = _search_queries(
+                    query_titles,
+                    lambda q: fetch_tmdb_candidates(
+                        q, flipped_year, flipped_tv, self.tmdb_api_key.get()
+                    ),
+                )
+                if current:
+                    merged.extend(current)
+                    type_flipped = True
+                    break
+
         bgm_fallback = False
         if not merged and mode == "siliconflow_tmdb":
             for query_titles in query_groups:
@@ -2241,6 +2334,8 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
                 used_query
             ) != normalize_compare_text(query_title):
                 msg_hit += " (备选标题)"
+            if type_flipped and tid_hit != "None":
+                msg_hit += " (类型翻转)"
             if bgm_fallback and tid_hit != "None":
                 meta_hit["_provider"] = "bgm"
                 if self.tmdb_api_key.get().strip():
@@ -2298,8 +2393,10 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
     def _build_status_text(self, *messages):
         return build_status_text(*messages)
 
-    def _resolve_media_type(self, guess_data=None):
+    def _resolve_media_type(self, guess_data=None, pure_name=None, extracted_ep=None):
         """Resolve media type from UI override or parser result."""
+        from utils.helpers import EXPLICIT_EP_MARKER_RE
+
         override = str(self.media_type_override.get() or "").strip()
         if override == "电影":
             return "movie"
@@ -2308,8 +2405,38 @@ class MediaRenamerGUI(ConfigMixin, ListMixin):
 
         guessed_type = str((guess_data or {}).get("type") or "episode").strip().lower()
         if guessed_type in ("movie", "film"):
+            if pure_name and EXPLICIT_EP_MARKER_RE.search(str(pure_name)):
+                return "episode"
             return "movie"
+        if guessed_type == "episode":
+            return "episode"
+        if pure_name is not None:
+            text = str(pure_name or "")
+            has_season_ep = bool(re.search(r"(?i)\bS\d{1,2}E\d{1,4}\b", text))
+            has_ep_marker = bool(EXPLICIT_EP_MARKER_RE.search(text))
+            has_season_marker = bool(
+                re.search(r"(?i)(?:\bS\d{1,2}\b|Season\s*\d|第\s*\d{1,2}\s*季)", text)
+            )
+            if has_season_ep or has_ep_marker or has_season_marker:
+                return "episode"
+            if extracted_ep is None:
+                return "movie"
         return "episode"
+
+    def _reset_progress_bar(self):
+        """任务结束后清零进度条，避免一直停在 100%。"""
+        try:
+            self.pbar["value"] = 0
+            self.pbar.config(maximum=1)
+        except Exception:
+            pass
+
+    def _on_preview_finished(self):
+        """预览池全部跑完后的收尾（子类可覆盖以恢复选中/详情）。"""
+        self._reset_progress_bar()
+
+    def _show_error(self, title, msg):
+        messagebox.showerror(title, msg, parent=self.root)
 
     def start_preview(self):
         """开始预览"""

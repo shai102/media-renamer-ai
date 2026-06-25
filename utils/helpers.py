@@ -118,6 +118,13 @@ GENERIC_SEASON_TITLE_RE = re.compile(
 QUERY_SEASON_EP_RE = re.compile(
     r"(?ix)\b(?:S\d{1,2}E\d{1,4}|Season\s*\d{1,2}|S\d{1,2}|Episode\s*\d{1,4}|EP?\s*\d{1,4})\b"
 )
+# 明确剧集标记（含中文数字），用于纠正 guessit 把「第108集」等误判为电影
+EXPLICIT_EP_MARKER_RE = re.compile(
+    r"(?i)(?:\bS\d{1,2}E\d{1,4}\b"
+    r"|\bEP?\s*\d{1,4}\b"
+    r"|第\s*(?:\d{1,4}|[零〇一二三四五六七八九十百两]{1,8})\s*[集话話])"
+)
+MOVIE_VARIANT_RE = re.compile(r"(?i)(?:\bmovie\b|电影版|劇場版|剧场版|the\s+movie)")
 VARIANT_TITLE_MARKERS = {
     "diary": re.compile(r"(?i)(?:diar(?:y|ies)|nikki|日记|日志|日誌)"),
     "spinoff": re.compile(r"(?i)(?:spin[-_. ]?off|外传|外傳|番外)"),
@@ -131,6 +138,58 @@ MEDIA_NOISE_TOKEN_RE = re.compile(
         |AAC\d*|DDP\d*|DD\d*|DTS(?:HD)?\d*|TRUEHD\d*|ATMOS
     )$"""
 )
+
+PLATFORM_PREFIX_RE = re.compile(
+    r"""(?ix)
+    ^(?P<prefix>
+        HBO\s*MAX|HBOMAX|MAX|ITUNES|I[Tt]
+        |NF|NETFLIX|AMZN|AMAZON
+        |ATVP|APPLE\s*TV\+?
+        |DSNP|DISNEY\+?
+        |PMTP|PARAMOUNT\+?
+        |HMAX|HULU|TVING|COLORTV
+        |B-GLOBAL|BILIBILI|BAHA
+        |KKTV|LINETV|FRIDAY|CATCHPLAY
+        |CRAVE|STAN|MUBI|PEACOCK|STARZ
+    )
+    [\s._\-]+(?P<rest>.+)$
+    """,
+)
+PLATFORM_BRACKET_PREFIX_RE = re.compile(r"^[【\[\(（][^】\]\)）]{1,16}[】\]\)）]\s*")
+_PLATFORM_ABBREVS = frozenset({
+    "nf", "netflix", "amzn", "amazon", "dsnp", "disney", "atvp", "hmax",
+    "hulu", "pmtp", "paramount", "tving", "colortv", "hbomax", "max",
+    "itunes", "bilibili", "baha", "kktv", "linetv", "friday", "catchplay",
+    "crave", "stan", "mubi", "peacock", "starz",
+})
+
+
+def strip_platform_prefix(text):
+    """剥离流媒体平台前缀（如 NF.标题、Bilibili 标题、[Disney+] 标题）。"""
+    raw = str(text or "").strip()
+    if not raw:
+        return raw
+    match = PLATFORM_PREFIX_RE.match(raw)
+    if match:
+        return match.group("rest").strip()
+
+    first_dot = raw.find(".")
+    first_space = raw.find(" ")
+    sep_pos = -1
+    if first_dot > 0 and (first_space < 0 or first_dot < first_space):
+        sep_pos = first_dot
+    elif first_space > 0:
+        sep_pos = first_space
+    if sep_pos > 0:
+        token = raw[:sep_pos].strip()
+        lowered = token.lower().rstrip("+")
+        if lowered in _PLATFORM_ABBREVS and lowered not in ("max", "it", "stan"):
+            rest = raw[sep_pos + 1:].strip()
+            rest_tokens = [tok for tok in re.split(r"[\s._-]+", rest) if tok]
+            if rest_tokens and not re.fullmatch(r"(?i)\d{4}", rest_tokens[0]):
+                return rest
+    return raw
+
 
 ERROR_CODE_TIMEOUT = "TIMEOUT"
 ERROR_CODE_CONFIG = "CONFIG"
@@ -238,6 +297,21 @@ def extract_year_from_release(release):
         return ""
     match = re.search(r"(\d{4})", str(release))
     return match.group(1) if match else ""
+
+
+def years_within_tolerance(year_a, year_b, tolerance=1):
+    """年份容差匹配：任一侧缺失视为兼容，否则差值 <= tolerance 视为兼容。
+
+    跨年番剧（日本播出年 vs TMDb 地区年）常相差一年，用容差避免误杀。
+    """
+    a = extract_year_from_release(year_a)
+    b = extract_year_from_release(year_b)
+    if not a or not b:
+        return True
+    try:
+        return abs(int(a) - int(b)) <= tolerance
+    except (ValueError, TypeError):
+        return True
 
 
 def format_candidate_label(candidate):
@@ -446,12 +520,143 @@ def _is_episode_noise_number(num):
     return 1900 <= num <= 2099
 
 
+# 小数集（总集篇 / 回顾集）检测
+DECIMAL_EPISODE_RE = re.compile(
+    r"""(?ix)
+    (?:
+        s\d{1,2}\s*e\d{1,4}\.\d(?!\d)
+        | (?:ep?)\s*0*\d{1,4}\.\d(?!\d)
+        | 第\s*0*\d{1,4}\.\d(?!\d)\s*[集话話]
+        | [\[\(（]\s*0*\d{1,4}\.\d(?!\d)\s*[\]\)）]
+        | (?<![.\d])-\s*0*\d{1,2}\.\d(?!\d)(?=[\s\[\(（]|$)
+    )"""
+)
+
+_CN_DIGITS = {
+    "零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+    "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+}
+_CN_UNITS = {"十": 10, "百": 100}
+_CN_EPISODE_RE = re.compile(r"第\s*([零〇一二三四五六七八九十百两]{1,8})\s*[集话話]")
+
+_EP_RANGE_PATTERNS = (
+    # S01E01-E02 / S01E01E02 / S01E01-02
+    re.compile(r"(?i)\bS\d{1,2}\s*E\s*0*(\d{1,4})\s*(?:-\s*E?|E)\s*0*(\d{1,4})\b"),
+    # E01-E02 / EP01-02（无季前缀）
+    re.compile(r"(?i)\bEP?\s*0*(\d{1,4})\s*-\s*(?:EP?\s*)?0*(\d{1,4})\b"),
+    # 第01-02集 / 第01~02话 / 第01至02集
+    re.compile(r"第\s*0*(\d{1,4})\s*[-~至]\s*0*(\d{1,4})\s*[集话話]"),
+    # [01-02] / (01-02)
+    re.compile(r"[\[\(（]\s*0*(\d{1,4})\s*[-~]\s*0*(\d{1,4})\s*[\]\)）]"),
+)
+_EP_RANGE_MAX_SPAN = 30
+
+
+def cn_numeral_to_int(text):
+    """中文数字转整数（支持 十/百 结构与逐位写法，如 十二、二十五、一百零三、二〇五）。"""
+    raw = str(text or "").strip()
+    if not raw or len(raw) > 8:
+        return None
+    if all(ch in _CN_DIGITS for ch in raw):
+        value = 0
+        for ch in raw:
+            value = value * 10 + _CN_DIGITS[ch]
+        return value if 0 < value <= 2000 else None
+    total = 0
+    num = 0
+    for ch in raw:
+        if ch in _CN_DIGITS:
+            num = _CN_DIGITS[ch]
+        elif ch in _CN_UNITS:
+            unit = _CN_UNITS[ch]
+            if num == 0:
+                num = 1
+            total += num * unit
+            num = 0
+        else:
+            return None
+    total += num
+    return total if 0 < total <= 2000 else None
+
+
+def cached_guessit(name):
+    """带 LRU 缓存的 guessit，避免同一文件名在管线中被重复解析。"""
+    from functools import lru_cache
+
+    try:
+        from guessit import guessit as _guessit
+    except Exception:
+        return {}
+
+    @lru_cache(maxsize=256)
+    def _impl(name_str):
+        try:
+            return dict(_guessit(name_str))
+        except Exception:
+            return {}
+
+    return _impl(str(name or ""))
+
+
+def is_decimal_episode(pure_name, guess_data=None):
+    """检测小数集（总集篇/回顾集），如 S01E12.5、第12.5集、[12.5]。"""
+    guessed = guess_data if isinstance(guess_data, dict) else None
+    if guessed is None:
+        try:
+            from guessit import guessit as _guessit
+            guessed = dict(_guessit(str(pure_name or "")))
+        except Exception:
+            guessed = {}
+    episode = guessed.get("episode")
+    if isinstance(episode, list) and episode:
+        episode = episode[0]
+    if isinstance(episode, float) and episode != int(episode):
+        return True
+    return bool(DECIMAL_EPISODE_RE.search(str(pure_name or "")))
+
+
+def extract_episode_range(pure_name, guess_data=None):
+    """提取多集合并文件的集数范围，返回 (start, end) 或 None。
+
+    支持 S01E01-E02 / S01E01E02 / EP01-02 / 第01-02话 / [01-02]，
+    以及 guessit 解析出的连续集数列表。
+    """
+    text = str(pure_name or "")
+    for index, pattern in enumerate(_EP_RANGE_PATTERNS):
+        match = pattern.search(text)
+        if not match:
+            continue
+        try:
+            start, end = int(match.group(1)), int(match.group(2))
+        except Exception:
+            continue
+        if index >= 3 and (_is_episode_noise_number(start) or _is_episode_noise_number(end)):
+            continue
+        if 1 <= start < end and end - start <= _EP_RANGE_MAX_SPAN:
+            return start, end
+
+    episodes = (guess_data or {}).get("episode") if isinstance(guess_data, dict) else None
+    if isinstance(episodes, list) and len(episodes) >= 2:
+        try:
+            nums = sorted(int(ep) for ep in episodes)
+        except Exception:
+            return None
+        if (
+            nums[0] >= 1
+            and nums == list(range(nums[0], nums[-1] + 1))
+            and nums[-1] - nums[0] <= _EP_RANGE_MAX_SPAN
+            and not any(_is_episode_noise_number(n) for n in nums)
+        ):
+            return nums[0], nums[-1]
+    return None
+
+
 def extract_episode_number(pure_name, guess_data=None, ai_data=None):
     text = str(pure_name or "")
     patterns = [
         r"(?i)\bS\d{1,2}E\s*0*(\d{1,4})\b",
         r"(?i)\bEP?\s*0*(\d{1,4})\b",
-        r"(?i)第\s*0*(\d{1,4})\s*[集话話]\b",
+        r"(?i)第\s*0*(\d{1,4})(?:\s*[-~至]\s*0*\d{1,4})?\s*[集话話]\b",
         r"(?i)[\[\(（]\s*0*(\d{1,4})(?:v\d+)?\s*[\]\)）]",
         r"(?i)-\s*0*(\d{1,4})(?:v\d+)?(?=\s*(?:$|[\[\(（]))",
     ]
@@ -469,6 +674,16 @@ def extract_episode_number(pure_name, guess_data=None, ai_data=None):
         if 0 < num <= 5000:
             return num
 
+    cn_match = _CN_EPISODE_RE.search(text)
+    if cn_match:
+        num = cn_numeral_to_int(cn_match.group(1))
+        if num:
+            return num
+
+    ep_range = extract_episode_range(text, guess_data)
+    if ep_range:
+        return ep_range[0]
+
     if guess_data:
         num = _coerce_episode_number(guess_data.get("episode"))
         if num and not _is_episode_noise_number(num):
@@ -483,7 +698,9 @@ def extract_episode_number(pure_name, guess_data=None, ai_data=None):
 
 
 def derive_title_from_filename(pure_name):
-    text = str(pure_name or "")
+    text = strip_platform_prefix(str(pure_name or ""))
+    text = PLATFORM_BRACKET_PREFIX_RE.sub("", text).strip()
+    text = strip_platform_prefix(text)
     leading_group_title = extract_title_after_leading_release_group(text)
     if leading_group_title:
         return leading_group_title
@@ -493,7 +710,7 @@ def derive_title_from_filename(pure_name):
     text = text.replace("_", " ").replace(".", " ")
     text = re.sub(r"(?i)\bS\d{1,2}E\d{1,4}\b.*$", "", text)
     text = re.sub(r"(?i)\bEP?\s*\d{1,4}\b.*$", "", text)
-    text = re.sub(r"(?i)第\s*\d{1,4}\s*[集话話].*$", "", text)
+    text = re.sub(r"(?i)第\s*(?:\d{1,4}|[零〇一二三四五六七八九十百两]{1,8})\s*[集话話].*$", "", text)
     text = re.sub(r"(?i)[\[\(（]\s*\d{1,4}(?:v\d+)?\s*[\]\)）]\s*$", "", text)
     return clean_search_title(text)
 
@@ -714,7 +931,8 @@ def format_candidate_label(candidate):
 def clean_search_title(title):
     if not title:
         return ""
-    text = re.sub(r"[\[\]\(\)（）]", " ", title)
+    text = strip_platform_prefix(title)
+    text = re.sub(r"[\[\]\(\)（）]", " ", text)
     text = re.sub(r"(?<![a-z0-9])[A-Z0-9]{2,}(?:-[A-Z0-9]{2,})+(?![a-z0-9])", " ", text)
     text = LANG_TAG_COMBO_RE.sub(" ", text)
     text = re.sub(
@@ -828,7 +1046,9 @@ def build_fallback_token_queries(title, min_length=4):
 
 
 def derive_title_from_filename(pure_name):
-    text = str(pure_name or "")
+    text = strip_platform_prefix(str(pure_name or ""))
+    text = PLATFORM_BRACKET_PREFIX_RE.sub("", text).strip()
+    text = strip_platform_prefix(text)
     leading_group_title = extract_title_after_leading_release_group(text)
     if leading_group_title:
         return leading_group_title
@@ -838,7 +1058,7 @@ def derive_title_from_filename(pure_name):
     text = text.replace("_", " ").replace(".", " ")
     text = re.sub(r"(?i)\bS\d{1,2}E\d{1,4}\b.*$", "", text)
     text = re.sub(r"(?i)\bEP?\s*\d{1,4}\b.*$", "", text)
-    text = re.sub(r"(?i)第\s*\d{1,4}\s*[集话話].*$", "", text)
+    text = re.sub(r"(?i)第\s*(?:\d{1,4}|[零〇一二三四五六七八九十百两]{1,8})\s*[集话話].*$", "", text)
     text = re.sub(r"(?i)[\[\(（]\s*\d{1,4}(?:v\d+)?\s*[\]\)）]\s*$", "", text)
     return clean_search_title(text)
 
@@ -874,6 +1094,46 @@ def candidate_looks_like_unrequested_variant(candidate, source_text):
         return False
     source_markers = title_variant_markers(source_text)
     return not candidate_markers.issubset(source_markers)
+
+
+def candidate_looks_like_movie_version(candidate):
+    """候选条目像剧场版/电影版（剧集文件名不应命中）。"""
+    meta = (candidate or {}).get("meta") or {}
+    blob = " ".join(
+        str(v or "")
+        for v in (
+            (candidate or {}).get("title"),
+            (candidate or {}).get("alt_title"),
+            meta.get("original_title"),
+        )
+    )
+    return bool(MOVIE_VARIANT_RE.search(blob))
+
+
+def candidate_looks_like_unrequested_subtitle_arc(candidate, query_title, source_text):
+    """候选比查询标题多出「之XX篇/之XX」等分篇名，而源文件名未提及。"""
+    q = normalize_compare_text(clean_search_title(query_title))
+    if len(q) < 3:
+        return False
+    source_norm = normalize_compare_text(clean_search_title(source_text))
+    meta = (candidate or {}).get("meta") or {}
+    for raw in (
+        (candidate or {}).get("title") or "",
+        (candidate or {}).get("alt_title") or "",
+        meta.get("original_title") or "",
+    ):
+        cand = normalize_compare_text(clean_search_title(raw))
+        if not cand or cand == q:
+            continue
+        if not cand.startswith(q):
+            continue
+        suffix = cand[len(q) :]
+        if not suffix.startswith("之"):
+            continue
+        arc = suffix[1:]
+        if arc and arc not in source_norm:
+            return True
+    return False
 
 
 def split_mixed_title(title):

@@ -2,7 +2,6 @@ import logging
 import os
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tkinter import messagebox
 
 from utils.helpers import ERROR_CODE_UNKNOWN, format_error_message
 
@@ -66,10 +65,11 @@ def run_execution(gui, run_mode):
         err_msg = f"执行失败: {err}"
         gui.root.after(
             0,
-            lambda msg=err_msg: messagebox.showerror("错误", msg, parent=gui.root),
+            lambda msg=err_msg: gui._show_error("错误", msg),
         )
 
     gui.root.after(0, lambda: gui.status.config(text="任务全部完成"))
+    gui.root.after(0, gui._reset_progress_bar)
 
 
 def process_one_file(gui, item, run_mode):
@@ -191,10 +191,11 @@ def run_scrape_execution(gui):
         err_msg = f"刮削失败: {err}"
         gui.root.after(
             0,
-            lambda msg=err_msg: messagebox.showerror("错误", msg, parent=gui.root),
+            lambda msg=err_msg: gui._show_error("错误", msg),
         )
 
     gui.root.after(0, lambda: gui.status.config(text="刮削全部完成"))
+    gui.root.after(0, gui._reset_progress_bar)
 
 
 def process_one_file_scrape(gui, item):

@@ -6,7 +6,6 @@ import tkinter as tk
 import time
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from tkinter import messagebox
 
 from guessit import guessit
 
@@ -27,6 +26,7 @@ from core.workers.execution_runner import (
 )
 from utils.helpers import (
     ERROR_CODE_UNKNOWN,
+    clean_search_title,
     derive_title_from_filename,
     extract_db_id_from_path,
     extract_episode_number,
@@ -53,6 +53,8 @@ GENERIC_SEASON_DIR_RE = re.compile(
     r"(?i)^(?:season\s*\d{1,2}|s\s*\d{1,2}|第\s*\d{1,2}\s*季)$"
 )
 STANDARD_EPISODE_RE = re.compile(r"(?i)\bS\d{1,2}E\d{1,3}\b")
+CN_EPISODE_RE = re.compile(r"第\s*\d{1,4}\s*[集话話]")
+PLATFORM_BRACKET_PREFIX_RE = re.compile(r"^[【\[\(（][^】\]\)）]{1,16}[】\]\)）]\s*")
 ZERO_EPISODE_SPECIAL_RE = re.compile(r"(?i)\bS\s*0*(\d{1,2})\s*E\s*0*0\b")
 ALT_ZERO_EPISODE_SPECIAL_RE = re.compile(r"(?i)\b(\d{1,2})x0*0\b")
 DECIMAL_EPISODE_RE = re.compile(
@@ -242,7 +244,12 @@ def _retry_rate_limited_siblings(gui, current_index, dir_p):
 
 def _derive_guessit_fields(gui, pure, dir_p, g, extracted_ep):
     """Build the baseline parse result from guessit and directory hints."""
-    title = g.get("title") or derive_title_from_filename(pure) or "未知"
+    derived = derive_title_from_filename(pure)
+    raw_guess = clean_search_title((g.get("title") if g else None) or "")
+    if extracted_ep is not None and _is_meaningful_title(derived):
+        title = derived
+    else:
+        title = raw_guess or derived or "未知"
     dir_season = extract_season_from_dir(dir_p)
     season = gui._pick_season(pure, g, dir_season if dir_season is not None else 1)
     year = g.get("year")
@@ -273,8 +280,28 @@ def _derive_guessit_fields(gui, pure, dir_p, g, extracted_ep):
     return title, year, season, episode
 
 
+def _guessit_title_reliable(pure, g, guess_title, extracted_ep):
+    """Filename already encodes a trustworthy show title + episode marker."""
+    if not _is_meaningful_title(guess_title) or extracted_ep is None:
+        return False
+    pure_text = str(pure or "")
+    media_type = str((g or {}).get("type") or "").strip().lower()
+    if media_type and media_type not in ("episode", "movie"):
+        return False
+    has_marker = bool(
+        STANDARD_EPISODE_RE.search(pure_text)
+        or CN_EPISODE_RE.search(pure_text)
+        or safe_int((g or {}).get("season"), 0) > 0
+    )
+    return has_marker
+
+
 def _guessit_needs_assist(pure, dir_p, g, title, extracted_ep):
     """Heuristics for deciding whether assist mode should invoke AI early."""
+    guess_title = str(g.get("title") or "").strip() or title
+    if _guessit_title_reliable(pure, g, guess_title, extracted_ep):
+        return False
+
     title_norm = normalize_compare_text(title)
     if not _is_meaningful_title(title):
         return True
@@ -285,7 +312,6 @@ def _guessit_needs_assist(pure, dir_p, g, title, extracted_ep):
     if GROUP_RELEASE_RE.search(str(pure or "")):
         return True
 
-    guess_title = str(g.get("title") or "").strip()
     derived_title = derive_title_from_filename(pure)
     if (
         guess_title
@@ -294,20 +320,8 @@ def _guessit_needs_assist(pure, dir_p, g, title, extracted_ep):
     ):
         return True
 
-    # Clean standard episode names should not be forced into AI just because
-    # the parent folder uses a localized title that differs from the filename.
-    looks_like_clean_standard_episode = (
-        extracted_ep is not None
-        and _is_meaningful_title(title)
-        and str((g or {}).get("type") or "").strip().lower() == "episode"
-        and (
-            STANDARD_EPISODE_RE.search(str(pure or ""))
-            or safe_int((g or {}).get("season"), 0) > 0
-        )
-    )
-
     dir_name = os.path.basename(dir_p or "").strip()
-    if GENERIC_SEASON_DIR_RE.match(dir_name) and not looks_like_clean_standard_episode:
+    if GENERIC_SEASON_DIR_RE.match(dir_name):
         parent_title = os.path.basename(os.path.dirname(dir_p or "")).strip()
         if _is_meaningful_title(parent_title):
             if normalize_compare_text(parent_title) != title_norm:
@@ -346,14 +360,21 @@ def _build_dir_cache_entry(
     return cache_data
 
 
-def _dir_cache_key(dir_path, season):
-    """Scope directory parse reuse to one real folder and one season."""
+def _dir_cache_key(dir_path, season, title_hint=None):
+    """Scope directory parse reuse to folder + season + 作品标题。
+
+    同一物理目录里混放多部剧时，必须按标题分桶，避免 S01 文件共用错误缓存。
+    """
     dir_key = os.path.normcase(os.path.normpath(str(dir_path or "")))
-    return f"{dir_key}||season={safe_int(season, 1)}"
+    base = f"{dir_key}||season={safe_int(season, 1)}"
+    norm = normalize_compare_text(str(title_hint or ""))
+    if norm:
+        return f"{base}||title={norm}"
+    return base
 
 
 def _can_reuse_same_folder_season_cache(cached_ai, current_season, guess_data=None):
-    """Trust a parse cache inside the same folder+season unless year conflicts."""
+    """同目录+同季的前置校验（年份冲突则拒绝）；须配合标题匹配一起使用。"""
     if not isinstance(cached_ai, dict):
         return False
 
@@ -432,10 +453,14 @@ def _merge_assist_parse(
     )
 
     if _is_meaningful_title(ai_title):
+        guessit_reliable = _guessit_title_reliable(pure, g, guess_title, extracted_ep)
         if not _is_meaningful_title(title):
             title = ai_title
             used_fields.add("title")
-        elif normalize_compare_text(ai_title) != normalize_compare_text(title):
+        elif (
+            normalize_compare_text(ai_title) != normalize_compare_text(title)
+            and not guessit_reliable
+        ):
             title = ai_title
             used_fields.add("title")
 
@@ -462,6 +487,20 @@ def _merge_assist_parse(
         parse_source = "guessit"
 
     return title, year, season, episode, parse_source
+
+
+def _db_cache_key(pure, parsed_title, year, is_tv, mode, folder_id):
+    """DB 匹配缓存键：同时绑定文件名推断标题，避免 AI 误改标题后串台。"""
+    from utils.helpers import clean_search_title, strip_platform_prefix
+
+    file_hint = normalize_compare_text(
+        clean_search_title(strip_platform_prefix(derive_title_from_filename(pure) or ""))
+    )
+    parse_hint = normalize_compare_text(clean_search_title(parsed_title or ""))
+    anchor = file_hint or parse_hint
+    return (
+        f"{anchor}||{parse_hint}_{safe_str(year)}_{is_tv}_{mode}_{folder_id or ''}"
+    )
 
 
 def async_batch_runner(gui, indices, title, t_id, msg, meta):
@@ -684,7 +723,7 @@ def run_preview_pool(gui):
         err_msg = format_error_message(ERROR_CODE_UNKNOWN, f"处理失败: {str(err)[:30]}")
         gui.root.after(
             0,
-            lambda msg=err_msg: messagebox.showerror("错误", msg, parent=gui.root),
+            lambda msg=err_msg: gui._show_error("错误", msg),
         )
 
     def _finish_preview_ui():
@@ -693,6 +732,7 @@ def run_preview_pool(gui):
             gui.status.config(text="已终止本轮剩余识别")
         else:
             gui.status.config(text="预览完成")
+        gui._on_preview_finished()
 
     gui.root.after(0, _finish_preview_ui)
 
@@ -756,7 +796,11 @@ def process_task(gui, i, advance_progress=True):
         ai_mode_obj = getattr(gui, "ai_mode", None)
         ai_mode_val = str(ai_mode_obj.get() if ai_mode_obj else "assist").strip().lower()
 
-        dir_cache_key = _dir_cache_key(dir_p, guess_season)
+        dir_cache_key = _dir_cache_key(
+            dir_p,
+            guess_season,
+            guess_title or derive_title_from_filename(pure),
+        )
         dir_parse_event = None
         is_parse_resolver = False
         with gui.cache_lock:
@@ -780,7 +824,7 @@ def process_task(gui, i, advance_progress=True):
         cached_parse_source = str((cached_ai or {}).get("parse_source") or "guessit")
         can_reuse_cached_parse = bool(cached_ai) and (
             _can_reuse_same_folder_season_cache(cached_ai, guess_season, g)
-            or gui._can_reuse_dir_ai(cached_ai, pure, g)
+            and gui._can_reuse_dir_ai(cached_ai, pure, g)
         )
         if can_reuse_cached_parse:
             if ai_mode_val == "force":
@@ -944,7 +988,7 @@ def process_task(gui, i, advance_progress=True):
             _mark_skipped_recap(gui, item, t, "decimal_recap")
             return
 
-        media_type = gui._resolve_media_type(g)
+        media_type = gui._resolve_media_type(g, pure_name=pure, extracted_ep=extracted_ep)
         is_tv = media_type == "episode"
         path_key = item.path
 
@@ -972,7 +1016,7 @@ def process_task(gui, i, advance_progress=True):
         folder_id_for_cache = (
             extract_db_id_from_path(item.path, mode, folder_id_title_hints) or ""
         )
-        cache_key = f"{t}_{safe_str(y)}_{is_tv}_{mode}_{folder_id_for_cache}"
+        cache_key = _db_cache_key(pure, t, y, is_tv, mode, folder_id_for_cache)
 
         with gui.cache_lock:
             db_c = gui.manual_locks.get(path_key) or gui.db_cache.get(cache_key)
@@ -1056,8 +1100,8 @@ def process_task(gui, i, advance_progress=True):
                     with gui.cache_lock:
                         if db_c and len(db_c) >= 2 and db_c[1] != "None":
                             gui.db_cache[cache_key] = db_c
-                            final_cache_key = (
-                                f"{t}_{safe_str(y)}_{is_tv}_{mode}_{folder_id_for_cache}"
+                            final_cache_key = _db_cache_key(
+                                pure, t, y, is_tv, mode, folder_id_for_cache
                             )
                             if final_cache_key != cache_key:
                                 gui.db_cache[final_cache_key] = db_c

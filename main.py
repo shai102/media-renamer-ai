@@ -1,7 +1,6 @@
 import logging
 import os
 import sys
-import tkinter as tk
 
 
 def _resolve_log_path():
@@ -24,18 +23,19 @@ def _setup_logging():
         force=True,
     )
 
+
 def main():
     _setup_logging()
-    from core.app import MediaRenamerGUI
+    from PySide6.QtWidgets import QApplication
 
-    try:
-        import ttkbootstrap as tb
+    app = QApplication.instance() or QApplication(sys.argv)
+    from core.app_qt import MediaRenamerGUIQt
 
-        root = tb.Window(themename="cosmo")
-    except Exception:
-        root = tk.Tk()
-    app = MediaRenamerGUI(root)
-    root.mainloop()
+    main_window = __import__("PySide6.QtWidgets", fromlist=["QMainWindow"]).QMainWindow()
+    gui = MediaRenamerGUIQt(main_window)
+    main_window.show()
+    sys.exit(app.exec())
+
 
 if __name__ == "__main__":
     main()
