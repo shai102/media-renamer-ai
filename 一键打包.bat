@@ -17,10 +17,12 @@ if errorlevel 1 (
 pyinstaller -y --onefile --windowed ^
   --name "媒体归档刮削助手" ^
   --icon "assets\app_icon.ico" ^
+  --add-data "assets;assets" ^
   --collect-all PySide6 ^
   --collect-all guessit ^
   --collect-all babelfish ^
   --collect-all Pillow ^
+  --exclude-module tkinter ^
   --clean ^
   main.py
 

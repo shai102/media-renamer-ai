@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -12,6 +13,21 @@ from xml.dom import minidom
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+
+def resource_path(*parts):
+    """解析资源文件路径，兼容源码运行与 PyInstaller 打包。
+
+    - 打包(onefile/onedir)：以 sys._MEIPASS（运行时解压目录）为根，
+      需配合打包脚本的 --add-data "assets;assets"。
+    - 源码运行：以项目根目录（本文件 utils/ 的上一级）为根。
+    """
+    if getattr(sys, "frozen", False):
+        base_dir = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
+    else:
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_dir, *parts)
+
 
 USER_AGENT = "MyMediaRenamer/73.0 (Fully Customizable Edition)"
 CONFIG_FILE = "renamer_config.json"

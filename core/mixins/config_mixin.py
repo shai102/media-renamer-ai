@@ -3,8 +3,6 @@ import logging
 import os
 import re
 
-from tkinter import messagebox
-
 from utils.helpers import CONFIG_FILE, safe_int
 
 
@@ -67,70 +65,6 @@ class ConfigMixin:
             except Exception as err:
                 logging.error(f"加载配置失败: {err}")
         return {}
-
-    def save_config(self, show_message=True):
-        """保存配置"""
-        preview_workers = self._clamp_workers(self.preview_workers.get(), 1)
-        sync_workers = self._clamp_workers(self.sync_workers.get(), 5)
-        execution_workers = self._clamp_workers(self.execution_workers.get(), 5)
-
-        self.preview_workers.set(str(preview_workers))
-        self.sync_workers.set(str(sync_workers))
-        self.execution_workers.set(str(execution_workers))
-        ai_temperature = self._clamp_temperature(self.ai_temperature.get(), 0.2)
-        self.ai_temperature.set(f"{ai_temperature:.2f}")
-        ai_top_p = self._clamp_top_p(self.ai_top_p.get(), 0.9)
-        self.ai_top_p.set(f"{ai_top_p:.2f}")
-
-        config_data = {
-            "sf_api_key": self.sf_api_key.get().strip(),
-            "sf_api_url": self.sf_api_url.get().strip(),
-            "sf_model": self.sf_model.get().strip(),
-            "ai_temperature": ai_temperature,
-            "ai_top_p": ai_top_p,
-            "ai_mode": self.ai_mode.get().strip() or "assist",
-            "bgm_api_key": self.bgm_api_key.get().strip(),
-            "tmdb_api_key": self.tmdb_api_key.get().strip(),
-            "tv_format": self.tv_format.get(),
-            "movie_format": self.movie_format.get(),
-            "preserve_media_suffix": self.preserve_media_suffix.get(),
-            "video_exts": self.video_exts.get(),
-            "sub_audio_exts": self.sub_audio_exts.get(),
-            "lang_tags": self.lang_tags.get(),
-            "strip_keywords": self._get_strip_keywords(),
-            "ollama_url": self.ollama_url.get().strip(),
-            "ollama_model": self.ollama_model.get().strip(),
-            "embedding_model": self.embedding_model.get().strip(),
-            "prefer_ollama": self.prefer_ollama.get(),
-            "use_embedding_rank": self.use_embedding_rank.get(),
-            "preview_workers": preview_workers,
-            "sync_workers": sync_workers,
-            "execution_workers": execution_workers,
-            "media_type_override": self.media_type_override.get(),
-            "window_geometry": self.root.winfo_geometry(),
-            "settings_window_geometry": self.config.get("settings_window_geometry", ""),
-        }
-
-        try:
-            with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-                json.dump(config_data, f, indent=4, ensure_ascii=False)
-            if show_message:
-                messagebox.showinfo(
-                    "成功",
-                    "所有配置与规则已保存！立即生效。",
-                    parent=self.root,
-                )
-        except Exception as err:
-            if show_message:
-                messagebox.showerror("错误", f"保存失败: {err}", parent=self.root)
-
-    def on_close(self):
-        """关闭窗口时静默保存配置（含窗口位置）"""
-        try:
-            self.save_config(show_message=False)
-        except Exception as err:
-            logging.error(f"关闭时保存配置失败: {err}")
-        self.root.destroy()
 
     def _clamp_workers(self, value, default):
         """Normalize worker count to a safe desktop range."""

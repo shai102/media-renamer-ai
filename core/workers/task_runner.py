@@ -2,7 +2,6 @@
 import os
 import re
 import threading
-import tkinter as tk
 import time
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -727,7 +726,7 @@ def run_preview_pool(gui):
         )
 
     def _finish_preview_ui():
-        gui.btn_pre.config(state=tk.NORMAL)
+        gui.btn_pre.config(state="normal")
         if gui.preview_skip_all_event.is_set():
             gui.status.config(text="已终止本轮剩余识别")
         else:

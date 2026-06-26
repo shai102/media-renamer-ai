@@ -1,4 +1,4 @@
-# 媒体归档刮削助手 v3.4
+# 媒体归档刮削助手 v3.5
 
 TG 问题反馈群：<https://t.me/+Wx34NdYY_x1iNjg1>
 
@@ -120,7 +120,15 @@ TG 问题反馈群：<https://t.me/+Wx34NdYY_x1iNjg1>
 - “原地整理”适合把零散 STRM / 视频目录直接整理成 Jellyfin / Emby / Kodi 可识别的媒体库结构。
 - “归档移动”适合把源目录内容整理到另一个媒体库根目录。
 
-## <a id="changelog"></a>最近维护更新（当前 GUI 版本：v3.4）
+## <a id="changelog"></a>最近维护更新（当前 GUI 版本：v3.5）
+
+### v3.5 更新
+
+- 彻底移除 tkinter 依赖：业务逻辑抽出为无 UI 的 `MediaRenamerCore` 基类，桌面端改为纯 PySide6 单一技术栈，启动不再隐式加载 tkinter
+- 桌面界面全面美化：列表状态列语义着色（完成绿 / 待手动橙 / 失败红 / 识别中蓝）、侧栏品牌区 + 一键深浅色切换、支持拖拽文件夹直接添加、详情区卡片化与按钮按下反馈
+- 修复打包后运行窗口图标丢失：新增 `resource_path` 适配 PyInstaller 解压路径，打包脚本补 `--add-data assets`
+- 代码精简与依赖清理：移除已废弃的 tkinter 死代码与 `ttkbootstrap` 依赖，打包默认 `--exclude-module tkinter`
+- README 项目结构维护更新，反映 `renamer_core` / `services` 新模块布局
 
 ### v3.4 更新
 
@@ -430,22 +438,29 @@ assets/
   app_icon.ico                  # 程序图标（运行窗口 / EXE 打包共用）
   app_icon.png                  # 图标原始 PNG 资源
 core/
-  app.py                        # 主 GUI、树视图、设置窗口、流程编排
+  renamer_core.py               # MediaRenamerCore：无 UI 业务逻辑基类（识别/匹配/命名/执行/刮削/配置），零 tkinter
+  app_qt.py                     # MediaRenamerGUIQt：PySide6 主窗口，继承 MediaRenamerCore，负责 UI 构建与钩子
   models/
     media_item.py               # MediaItem 数据模型（含稳定 id / source_path / organize_root）
   mixins/
-    config_mixin.py             # 配置加载/保存、窗口状态、并发参数
+    config_mixin.py             # 配置加载、窗口状态、并发参数
     list_mixin.py               # 文件列表增删、分组来源记录、缓存清理
   services/
     matcher_service.py          # Ollama 解析、embedding 重排、候选判定
     naming_service.py           # 季集提取、标题复用、状态文本与命名辅助
     template_service.py         # 文件名模板渲染（旧占位符 / Jinja 双兼容）
-  ui/
-    dialogs.py                  # 季偏移等对话框
-    manual_match.py             # 手动匹配流程、候选弹窗、右键菜单
+    poster_service.py           # 海报 URL 解析与 PIL 预取（无 UI 依赖）
+    manual_search_service.py    # 手动匹配候选搜索 TMDb/BGM（无 UI 依赖）
   workers/
     task_runner.py              # 识别预览、数据库匹配、AI 三档识别链
     execution_runner.py         # 原地重命名 / 归档移动 / 原地整理 / 刮削执行链
+ui_qt/
+  adapters.py                   # tkinter→PySide6 适配层（RootAdapter/VarAdapter/TreeAdapter 等）
+  settings_dialog.py            # 设置 / API 配置窗口
+  manual_match_qt.py            # Qt 手动匹配、候选海报弹窗、右键菜单
+  season_offset_dialog.py       # 季偏移对话框
+  theme.py                      # 深色 / 浅色主题
+  widgets.py                    # 自定义控件（NoWheelComboBox 等）
 ai/
   ollama_ai.py                  # OpenAI 兼容 API 解析与连通性测试
 db/

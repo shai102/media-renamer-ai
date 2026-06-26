@@ -8,7 +8,6 @@ import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
-import requests
 from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
@@ -26,7 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.services.matcher_service import auto_pick_candidate_by_score
-from core.ui.manual_match import (
+from core.services.poster_service import (
     _prefetch_poster_urls,
     _resolve_poster_url,
 )

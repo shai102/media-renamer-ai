@@ -11,8 +11,8 @@ from __future__ import annotations
 import os
 import threading
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -32,9 +32,10 @@ from PySide6.QtWidgets import (
     QFrame,
     QButtonGroup,
     QHeaderView,
+    QGraphicsDropShadowEffect,
 )
 
-from core.app import MediaRenamerGUI
+from core.renamer_core import MediaRenamerCore
 from ui_qt.adapters import (
     ButtonAdapter,
     ProgressAdapter,
@@ -48,7 +49,7 @@ from ui_qt.theme import apply_theme, is_system_dark
 from ui_qt.widgets import NoWheelComboBox
 
 
-class MediaRenamerGUIQt(MediaRenamerGUI):
+class MediaRenamerGUIQt(MediaRenamerCore):
     """PySide6 主窗口，与 MediaRenamerGUI 接口兼容。"""
 
     def __init__(self, qmain_window: QMainWindow):
@@ -123,6 +124,9 @@ class MediaRenamerGUIQt(MediaRenamerGUI):
         self._build_ui()
         self.apply_saved_window_geometry()
         qmain_window.closeEvent = self._on_close_event
+        qmain_window.setAcceptDrops(True)
+        qmain_window.dragEnterEvent = self._on_drag_enter
+        qmain_window.dropEvent = self._on_drop
 
     # ---- 默认值辅助（避免循环 import helpers 常量） ----
     def _default_tv_format(self):
@@ -151,11 +155,9 @@ class MediaRenamerGUIQt(MediaRenamerGUI):
         self.colors = {"bg": "#ffffff", "text": "#1f2937", "primary": "#2563eb"}
 
     def _apply_app_icon(self):
-        icon_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "assets",
-            "app_icon.ico",
-        )
+        from utils.helpers import resource_path
+
+        icon_path = resource_path("assets", "app_icon.ico")
         if os.path.exists(icon_path):
             try:
                 self._qt_root.setWindowIcon(QIcon(icon_path))
@@ -165,7 +167,7 @@ class MediaRenamerGUIQt(MediaRenamerGUI):
     # ---- UI 构建 ----
     def _build_ui(self):
         win = self._qt_root
-        win.setWindowTitle("媒体归档刮削助手 v3.4")
+        win.setWindowTitle("媒体归档刮削助手 v3.5")
         win.resize(1300, 900)
 
         central = QWidget()
@@ -209,10 +211,25 @@ class MediaRenamerGUIQt(MediaRenamerGUI):
         layout.setContentsMargins(12, 16, 12, 12)
         layout.setSpacing(14)
 
-        title = QLabel("媒体归档刮削助手")
-        title.setObjectName("DetailTitle")
+        brand = QWidget()
+        brand_row = QHBoxLayout(brand)
+        brand_row.setContentsMargins(0, 0, 0, 2)
+        brand_row.setSpacing(10)
+        logo = QLabel()
+        from utils.helpers import resource_path
+        logo_path = resource_path("assets", "app_icon.png")
+        if os.path.exists(logo_path):
+            logo.setPixmap(
+                QPixmap(logo_path).scaled(
+                    32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+            )
+        brand_row.addWidget(logo)
+        title = QLabel("媒体归档\n刮削助手")
+        title.setObjectName("BrandTitle")
         title.setWordWrap(True)
-        layout.addWidget(title)
+        brand_row.addWidget(title, 1)
+        layout.addWidget(brand)
 
         # 数据源
         src_group = QButtonGroup(side)
@@ -266,6 +283,12 @@ class MediaRenamerGUIQt(MediaRenamerGUI):
 
         layout.addStretch(1)
 
+        # 主题切换
+        self._theme_btn = QPushButton("☀ 浅色模式" if self._dark else "🌙 深色模式")
+        self._theme_btn.setObjectName("ghost")
+        self._theme_btn.clicked.connect(self._toggle_theme)
+        layout.addWidget(self._theme_btn)
+
         # 底部按钮
         btn_settings = QPushButton("设置 / API")
         btn_settings.clicked.connect(self.open_settings)
@@ -276,7 +299,64 @@ class MediaRenamerGUIQt(MediaRenamerGUI):
         btn_clear.clicked.connect(self.clear_list)
         layout.addWidget(btn_clear)
 
+        self._soft_shadow(side, blur=24, alpha=28, dx=2, dy=0)
         return side
+
+    def _soft_shadow(self, widget, blur=18, alpha=36, dx=0, dy=3):
+        """给无滚动容器加柔和阴影提升层次（不用于 QTreeWidget 等滚动控件，避免渲染坑）。"""
+        try:
+            eff = QGraphicsDropShadowEffect(widget)
+            eff.setBlurRadius(blur)
+            eff.setColor(QColor(15, 23, 42, alpha))
+            eff.setOffset(dx, dy)
+            widget.setGraphicsEffect(eff)
+        except Exception:
+            pass
+
+    def _toggle_theme(self):
+        self._dark = not self._dark
+        apply_theme(self._dark)
+        if getattr(self, "tree", None) is not None:
+            self.tree._dark = self._dark
+        self._theme_btn.setText("☀ 浅色模式" if self._dark else "🌙 深色模式")
+        self.refresh_tree_view()
+
+    def _on_drag_enter(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def _on_drop(self, event):
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.toLocalFile()]
+        if not paths:
+            event.ignore()
+            return
+        self._add_dropped_paths(paths)
+        event.acceptProposedAction()
+
+    def _add_dropped_paths(self, paths):
+        exts = self.get_media_exts()
+        count = 0
+        for p in paths:
+            if os.path.isdir(p):
+                for root_dir, _, files in os.walk(p):
+                    for fn in files:
+                        if fn.lower().endswith(exts):
+                            if self._add(
+                                os.path.join(root_dir, fn),
+                                source_path=p,
+                                organize_root=self._default_organize_root(p),
+                                refresh=False,
+                            ):
+                                count += 1
+            elif os.path.isfile(p):
+                d = os.path.dirname(p)
+                if self._add(p, source_path=d, organize_root=d, refresh=False):
+                    count += 1
+        if count:
+            self.refresh_tree_view()
+            self.status.config(text=f"已拖入 {count} 个文件")
 
     def _pick_directory(self, entry: QLineEdit):
         folder = QFileDialog.getExistingDirectory(self._qt_root, "选择目录")
@@ -357,10 +437,11 @@ class MediaRenamerGUIQt(MediaRenamerGUI):
         show_context_menu(self, global_pos)
 
     def _build_detail_area(self) -> QWidget:
-        wrap = QWidget()
+        wrap = QFrame()
+        wrap.setObjectName("DetailCard")
         lay = QHBoxLayout(wrap)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(8)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(16)
         self.detail_left_label = QLabel("")
         self.detail_left_label.setWordWrap(True)
         self.detail_left_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
@@ -665,7 +746,7 @@ class MediaRenamerGUIQt(MediaRenamerGUI):
         return qt_manual_match(self)
 
     def _async_manual_match_search(self, selected_ids, user_input, mode):
-        from core.ui.manual_match import async_manual_match_search
+        from core.services.manual_search_service import async_manual_match_search
         return async_manual_match_search(self, selected_ids, user_input, mode)
 
     def _show_manual_match_results(self, selected_ids, results, error_msg=""):

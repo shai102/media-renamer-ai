@@ -1,8 +1,5 @@
 ﻿import logging
 import os
-import tkinter as tk
-
-from tkinter import filedialog
 
 from core.models.media_item import MediaItem
 from utils.helpers import clear_api_cache_file
@@ -16,44 +13,6 @@ class ListMixin:
             return ""
         parent = os.path.dirname(path)
         return parent or path
-
-    def add_files(self):
-        """添加文件"""
-        files = filedialog.askopenfilenames(parent=self.root)
-        count = 0
-        for file_path in files:
-            source_dir = os.path.dirname(file_path)
-            if self._add(
-                file_path,
-                source_path=source_dir,
-                organize_root=source_dir,
-                refresh=False,
-            ):
-                count += 1
-        if count:
-            self.refresh_tree_view()
-            self.status.config(text=f"已添加 {count} 个文件")
-
-    def add_folder(self):
-        """添加文件夹"""
-        folder = filedialog.askdirectory(parent=self.root)
-        if folder:
-            exts = self.get_media_exts()
-            count = 0
-            for root_dir, _, files in os.walk(folder):
-                for file_name in files:
-                    if file_name.lower().endswith(exts):
-                        if self._add(
-                            os.path.join(root_dir, file_name),
-                            source_path=folder,
-                            organize_root=self._default_organize_root(folder),
-                            refresh=False,
-                        ):
-                            count += 1
-
-            if count > 0:
-                self.refresh_tree_view()
-                self.status.config(text=f"已添加 {count} 个文件")
 
     def _add(self, path, source_path=None, organize_root=None, refresh=True):
         """添加单个文件"""
